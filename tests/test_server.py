@@ -63,6 +63,13 @@ class ServerTests(unittest.TestCase):
         self.assertIn("plan", body)
         self.assertIn("pricing", body)
 
+    def test_logo_png(self):
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/logo.png")
+        with urllib.request.urlopen(req) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(resp.headers.get_content_type(), "image/png")
+            self.assertGreater(len(resp.read()), 0)
+
     def test_head_returns_200_not_501(self):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/", method="HEAD")
         with urllib.request.urlopen(req) as resp:

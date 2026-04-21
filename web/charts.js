@@ -1,16 +1,19 @@
 // charts.js — themed ECharts wrappers
 
 const PALETTE = ['#4A9EFF', '#7C5CFF', '#3FB68B', '#E8A23B', '#E5484D', '#5BCEDA', '#F472B6'];
+const CHART_FONT_FAMILY = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+const CHART_FONT_SIZE = 13;
+const LEGEND_TEXT_STYLE = { color: '#8B98A6', fontFamily: CHART_FONT_FAMILY, fontSize: CHART_FONT_SIZE };
 
 const BASE = {
-  textStyle: { color: '#E6EDF3', fontFamily: 'Inter' },
+  textStyle: { color: '#E6EDF3', fontFamily: CHART_FONT_FAMILY, fontSize: CHART_FONT_SIZE },
   color: PALETTE,
   grid: { left: 36, right: 12, top: 24, bottom: 24, containLabel: true },
 };
 
 const X_AXIS = {
   axisLine:  { lineStyle: { color: '#1F2630' } },
-  axisLabel: { color: '#8B98A6' },
+  axisLabel: { color: '#8B98A6', fontFamily: CHART_FONT_FAMILY, fontSize: CHART_FONT_SIZE },
   axisTick:  { show: false },
 };
 
@@ -18,7 +21,7 @@ const Y_AXIS = {
   axisLine:  { show: false },
   axisTick:  { show: false },
   splitLine: { lineStyle: { color: '#1F2630' } },
-  axisLabel: { color: '#8B98A6' },
+  axisLabel: { color: '#8B98A6', fontFamily: CHART_FONT_FAMILY, fontSize: CHART_FONT_SIZE },
 };
 
 const TOOLTIP = {
@@ -26,7 +29,7 @@ const TOOLTIP = {
   backgroundColor: '#0F1419',
   borderColor: '#283040',
   borderWidth: 1,
-  textStyle: { color: '#E6EDF3', fontFamily: 'Inter', fontSize: 12 },
+  textStyle: { color: '#E6EDF3', fontFamily: CHART_FONT_FAMILY, fontSize: CHART_FONT_SIZE },
   padding: [8, 12],
 };
 
@@ -41,7 +44,7 @@ export function lineChart(el, { x, series }) {
   c.setOption({
     ...BASE,
     tooltip: TOOLTIP,
-    legend: { textStyle: { color: '#8B98A6' }, top: 0, right: 0, icon: 'roundRect', itemWidth: 8, itemHeight: 8 },
+    legend: { textStyle: LEGEND_TEXT_STYLE, top: 0, right: 0, icon: 'roundRect', itemWidth: 8, itemHeight: 8 },
     xAxis: { ...X_AXIS, type: 'category', data: x, boundaryGap: false },
     yAxis: { ...Y_AXIS, type: 'value' },
     series: series.map(s => ({
@@ -78,7 +81,7 @@ export function stackedBarChart(el, { categories, series, formatter }) {
       valueFormatter: formatter || (v => Number(v).toLocaleString()),
     },
     legend: {
-      textStyle: { color: '#8B98A6' },
+      textStyle: LEGEND_TEXT_STYLE,
       top: 0, right: 0, icon: 'roundRect',
       itemWidth: 8, itemHeight: 8,
     },
@@ -110,7 +113,7 @@ export function groupedBarChart(el, { categories, series, formatter }) {
       valueFormatter: formatter || (v => Number(v).toLocaleString()),
     },
     legend: {
-      textStyle: { color: '#8B98A6' },
+      textStyle: LEGEND_TEXT_STYLE,
       top: 0, right: 0, icon: 'roundRect',
       itemWidth: 8, itemHeight: 8,
     },
@@ -138,11 +141,11 @@ export function donutChart(el, data) {
     tooltip: {
       trigger: 'item',
       backgroundColor: '#0F1419', borderColor: '#283040', borderWidth: 1,
-      textStyle: { color: '#E6EDF3', fontFamily: 'Inter' },
+      textStyle: { color: '#E6EDF3', fontFamily: CHART_FONT_FAMILY, fontSize: CHART_FONT_SIZE },
       formatter: p => `${p.name}<br/><b>${Number(p.value).toLocaleString()}</b> tokens (${p.percent.toFixed(1)}%)`,
     },
     legend: {
-      textStyle: { color: '#8B98A6' },
+      textStyle: LEGEND_TEXT_STYLE,
       bottom: 10, icon: 'roundRect', itemWidth: 8, itemHeight: 8,
       type: 'scroll',
     },
@@ -157,7 +160,7 @@ export function donutChart(el, data) {
         show: true,
         position: 'inside',
         color: '#fff',
-        fontSize: 12,
+        fontSize: 13,
         fontWeight: 600,
         formatter: ({ percent }) => percent >= 6 ? percent.toFixed(0) + '%' : '',
       },

@@ -41,11 +41,34 @@ const ROUTES = {
   '/settings': () => import('/web/routes/settings.js'),
 };
 
+const AUTO_REFRESH_MS = 5 * 60 * 1000;
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function waitForPlan() {
+  while (true) {
+    try {
+      return await api('/api/plan');
+    } catch {
+      const app = $('#app');
+      if (app) {
+        app.innerHTML = '<div class="card"><h2>Avvio in corso…</h2><p>Sto aspettando il server locale. Riprovo tra 2 secondi.</p></div>';
+      }
+      await sleep(2000);
+    }
+  }
+}
+
 function buildTopbar() {
   const wrap = document.createElement('header');
   wrap.className = 'topbar';
   wrap.innerHTML = `
-    <div class="brand">Token Dashboard</div>
+    <div class="brand">
+      <img class="brand-logo" src="/logo.png" alt="" aria-hidden="true" width="20" height="20">
+      <span>Token Dashboard</span>
+    </div>
     <nav>
       ${Object.keys(ROUTES).map(p => `<a href="#${p}" data-route="${p}">${p.slice(1)}</a>`).join('')}
     </nav>
@@ -106,7 +129,7 @@ async function firstRun() {
 
 async function boot() {
   buildTopbar();
-  const planResp = await api('/api/plan');
+  const planResp = await waitForPlan();
   state.plan = planResp.plan;
   state.pricing = planResp.pricing;
   $('#plan-pill').textContent = state.plan;
@@ -115,6 +138,14 @@ async function boot() {
 
   window.addEventListener('hashchange', render);
   await render();
+
+  setInterval(async () => {
+    if (document.visibilityState !== 'visible') return;
+    try {
+      await api('/api/scan');
+      await render();
+    } catch {}
+  }, AUTO_REFRESH_MS);
 
   // Privacy blur (Cmd+B / Ctrl+B)
   window.addEventListener('keydown', e => {

@@ -5,8 +5,8 @@ import http.server
 import json
 import mimetypes
 import queue
+import signal
 import threading
-import time
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
@@ -23,6 +23,7 @@ from .skills import cached_catalog
 
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
 PRICING_JSON = Path(__file__).resolve().parent.parent / "pricing.json"
+LOGO_PATH = Path(__file__).resolve().parent.parent / "docs" / "logo.png"
 
 EVENTS: "queue.Queue[dict]" = queue.Queue()
 
@@ -59,6 +60,14 @@ def _serve_static(handler, rel: str) -> None:
         handler.send_response(404)
         handler.end_headers()
         return
+    return _serve_file(handler, p)
+
+
+def _serve_file(handler, p: Path) -> None:
+    if not p.is_file():
+        handler.send_response(404)
+        handler.end_headers()
+        return
     body = p.read_bytes()
     ctype, _ = mimetypes.guess_type(str(p))
     handler.send_response(200)
@@ -86,6 +95,8 @@ def build_handler(db_path: str, projects_dir: str):
             until = qs.get("until", [None])[0]
             if path in ("/", "/index.html"):
                 return _serve_static(self, "index.html")
+            if path == "/logo.png":
+                return _serve_file(self, LOGO_PATH)
             if path.startswith("/web/"):
                 return _serve_static(self, path[5:])
             if path == "/api/overview":
@@ -189,20 +200,16 @@ def build_handler(db_path: str, projects_dir: str):
 
     return H
 
-
-def _scan_loop(db_path: str, projects_dir: str, interval: float = 30.0):
-    while True:
-        try:
-            n = scan_dir(projects_dir, db_path)
-            if n["messages"] > 0:
-                EVENTS.put({"type": "scan", "n": n, "ts": time.time()})
-        except Exception as e:
-            EVENTS.put({"type": "error", "message": str(e)})
-        time.sleep(interval)
-
-
 def run(host: str, port: int, db_path: str, projects_dir: str):
-    threading.Thread(target=_scan_loop, args=(db_path, projects_dir), daemon=True).start()
     H = build_handler(db_path, projects_dir)
     httpd = http.server.ThreadingHTTPServer((host, port), H)
-    httpd.serve_forever()
+
+    def _handle_term(_signum, _frame):
+        threading.Thread(target=httpd.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, _handle_term)
+
+    try:
+        httpd.serve_forever()
+    finally:
+        httpd.server_close()

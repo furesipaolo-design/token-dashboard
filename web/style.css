@@ -41,10 +41,12 @@ header.topbar {
   font-weight: 600; letter-spacing: -0.01em; font-size: 14px;
   display: flex; align-items: center; gap: 8px;
 }
-.topbar .brand::before {
-  content: ""; display: inline-block; width: 8px; height: 8px;
-  background: var(--accent); border-radius: 2px;
-  box-shadow: 0 0 12px var(--accent);
+.topbar .brand-logo {
+  width: 20px; height: 20px;
+  display: block;
+  object-fit: contain;
+  border-radius: 4px;
+  flex: 0 0 auto;
 }
 .topbar nav { display: flex; gap: 2px; margin-left: 12px; }
 .topbar nav a {
