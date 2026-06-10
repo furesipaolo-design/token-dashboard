@@ -10,12 +10,14 @@ Inspired by [phuryn/claude-usage](https://github.com/phuryn/claude-usage) but di
 
 ## Status
 
-Working codebase. 79 Python unit tests (`python3 -m unittest discover tests`). Seven UI tabs wired up (Overview, Prompts, Sessions, Projects, Skills, Tips, Settings). Runs on macOS, Windows, and Linux; native macOS app shell in `macos/`.
+Working codebase. 109 Python unit tests (`python3 -m unittest discover tests`). Seven UI tabs wired up (Overview, Prompts, Sessions, Projects, Skills, Tips, Settings). Runs on macOS, Windows, and Linux; native macOS app shell in `macos/`.
 
 ## Architecture
 
 - `cli.py` → `token_dashboard/scanner.py` → `~/.claude/token-dashboard.db` (SQLite)
-- `token_dashboard/server.py` exposes JSON APIs (`/api/*`) + SSE stream (`/api/stream`) + static frontend (`web/`)
+- `token_dashboard/server.py` exposes JSON APIs (`/api/*`) + SSE stream (`/api/stream`) + static frontend (`web/`). A watcher thread rescans transcripts every `TOKEN_DASHBOARD_WATCH_INTERVAL` seconds (default 10, 0 disables) and broadcasts a `scan` SSE event so open pages refresh live.
+- `token_dashboard/insights.py` — per-project/per-session drill-down queries (cards detail, deterministic session summary)
+- `token_dashboard/meta.py` — project descriptions: auto-extracted from the project's CLAUDE.md/README.md on disk (never stored), manual overrides persisted in the `project_meta` table
 - `web/` is vanilla JS, no build step — hash router + ECharts
 - `macos/` is the native macOS shell: `main.swift` (AppKit + WKWebView window that spawns the bundled backend with `--scan-async` on fixed port 8377, or attaches to a server already running there) and `build.sh` (compiles universal binary, embeds the backend under `Contents/Resources/backend`, ad-hoc signs; `--install` copies to /Applications). Built bundles land in `dist/` (gitignored). The port is fixed on purpose: the web origin must stay stable or the frontend's localStorage resets at every launch.
 

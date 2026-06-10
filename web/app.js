@@ -14,13 +14,22 @@ export const fmt = {
   htmlSafe: s => (s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
   modelClass: m => {
     const s = (m || '').toLowerCase();
+    if (s.includes('fable'))  return 'fable';
     if (s.includes('opus'))   return 'opus';
     if (s.includes('sonnet')) return 'sonnet';
     if (s.includes('haiku'))  return 'haiku';
     return '';
   },
   modelShort: m => (m || '').replace('claude-', ''),
+  isClaude: m => /^claude-/.test(m || ''),
+  basename: p => (p || '').replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop() || p || '',
   ts: t => (t || '').slice(0, 16).replace('T', ' '),
+  duration: (start, end) => {
+    const ms = new Date(end) - new Date(start);
+    if (!isFinite(ms) || ms < 0) return '';
+    const m = Math.round(ms / 60000);
+    return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+  },
 };
 
 export async function api(path, opts) {

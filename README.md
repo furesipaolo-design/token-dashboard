@@ -39,7 +39,7 @@ The command:
 2. Starts a local server at http://127.0.0.1:8080.
 3. Opens your default browser to that URL.
 
-Leave it running; it re-scans every 30 seconds and pushes updates live. Stop with `Ctrl+C`.
+Leave it running; the server watches your transcripts (every 10 seconds, incremental) and pushes updates to open pages live over SSE. Stop with `Ctrl+C`.
 
 ## macOS app
 
@@ -84,6 +84,7 @@ python3 cli.py dashboard --projects-dir /path/to/projects --db /path/to/cache.db
 | `HOST` | `127.0.0.1` | Bind address. Keep the default. Setting `0.0.0.0` exposes your entire prompt history to anyone on your local network — don't do this on any network you don't fully control (no coffee-shop Wi-Fi, no coworking spaces). |
 | `CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | Where to scan for session JSONL files |
 | `TOKEN_DASHBOARD_DB` | `~/.claude/token-dashboard.db` | SQLite cache location |
+| `TOKEN_DASHBOARD_WATCH_INTERVAL` | `10` | Seconds between live-update rescans (incremental). `0` disables the watcher. |
 
 Pricing lives in [`pricing.json`](pricing.json). Edit it directly if model prices change or to add a new plan.
 
@@ -110,8 +111,8 @@ The dashboard is a single page with a hash-router tab bar across the top. Each t
 
 - **Overview** — all-time input/output/cache tokens, sessions, turns, estimated cost on your chosen plan, daily work and cache-read charts, tokens-by-project, token share by model, top tools by call count, and recent sessions. This is the landing tab.
 - **Prompts** — your most expensive user prompts ranked by tokens. Click any row to see the assistant response, tool calls made, and the size of each tool result.
-- **Sessions** — turn-by-turn view of any single session, with per-turn tokens and tool calls.
-- **Projects** — per-project comparison: tokens, session counts, and which files were touched most.
+- **Sessions** — three views (recent, by turns, grouped by project), each session titled by its first prompt. Click a row for the turn-by-turn detail with a deterministic summary header: duration, files edited, top tools, models, and estimated cost.
+- **Projects** — list view for comparison, or a card view (one card per project) with description, cost, a 30-day sparkline, and a click-to-expand detail (model mix, top tools, top files). Descriptions are auto-extracted from each project's `CLAUDE.md`/`README.md` and can be edited inline.
 - **Skills** — which skills you invoke most often, and (where we can measure them) their token cost. See [limitations](docs/KNOWN_LIMITATIONS.md#skills-token-counts-are-partial).
 - **Tips** — rule-based suggestions for reducing token usage (repeated file reads, oversized tool results, low cache-hit rate, etc.).
 - **Settings** — switch pricing between API / Pro / Max / Max-20x so cost figures everywhere else reflect your actual plan.

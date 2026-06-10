@@ -1,87 +1,106 @@
 import { api, fmt } from '/web/app.js';
 
-export default async function (root) {
-  const id = decodeURIComponent(location.hash.split('/')[2] || '');
-  if (!id) return renderList(root);
-  return renderSession(root, id);
+const VIEW_KEY = 'td.sessions-view';
+const VIEWS = [
+  { key: 'recent',  label: 'Recent' },
+  { key: 'turns',   label: 'By turns' },
+  { key: 'project', label: 'By project' },
+];
+
+export default async function render(root) {
+  const id = decodeURIComponent(location.hash.split('?')[0].split('/')[2] || '');
+  if (id) {
+    const mod = await import('/web/routes/session-detail.js');
+    return mod.default(root, id);
+  }
+  return renderList(root);
 }
 
 async function renderList(root) {
-  const list = await api('/api/sessions?limit=100');
+  const saved = localStorage.getItem(VIEW_KEY);
+  const view = VIEWS.some(v => v.key === saved) ? saved : 'recent';
   root.innerHTML = `
-    <div class="card">
-      <h2>Sessions</h2>
-      <table>
-        <thead><tr><th>started</th><th>project</th><th class="num">turns</th><th class="num">tokens</th><th>session</th></tr></thead>
-        <tbody>
-          ${list.map(s => `
-            <tr>
-              <td class="mono">${fmt.ts(s.started)}</td>
-              <td title="${fmt.htmlSafe(s.project_slug)}">${fmt.htmlSafe(s.project_name || s.project_slug)}</td>
-              <td class="num">${fmt.int(s.turns)}</td>
-              <td class="num">${fmt.int(s.tokens)}</td>
-              <td><a href="#/sessions/${encodeURIComponent(s.session_id)}" class="mono">${fmt.htmlSafe(s.session_id.slice(0,8))}…</a></td>
-            </tr>`).join('')}
-        </tbody>
-      </table>
-    </div>`;
-}
-
-async function renderSession(root, id) {
-  const turns = await api('/api/sessions/' + encodeURIComponent(id));
-  let totalIn = 0, totalOut = 0, totalCacheRd = 0;
-  let modelCounts = {};
-  for (const t of turns) {
-    if (t.type !== 'assistant') continue;
-    totalIn += t.input_tokens || 0;
-    totalOut += t.output_tokens || 0;
-    totalCacheRd += t.cache_read_tokens || 0;
-    const m = t.model || 'unknown';
-    modelCounts[m] = (modelCounts[m] || 0) + 1;
-  }
-  const slug = (turns[0] && turns[0].project_slug) || '';
-  const cwd = (turns.find(t => t.cwd) || {}).cwd || '';
-  const base = cwd ? cwd.replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop() : '';
-  const project = base || slug;
-  const started = (turns[0] && turns[0].timestamp) || '';
-  const ended = (turns[turns.length-1] && turns[turns.length-1].timestamp) || '';
-
-  root.innerHTML = `
-    <div class="card">
-      <h2 style="display:flex;align-items:center">
-        <span>Session ${fmt.htmlSafe(id.slice(0,8))}…</span>
-        <span class="spacer"></span>
-        <a href="#/sessions" class="muted">← all sessions</a>
-      </h2>
-      <div class="flex muted" style="font-family:var(--mono);font-size:12px;flex-wrap:wrap;gap:14px">
-        <span>${fmt.htmlSafe(project)}</span>
-        <span>${fmt.ts(started)} → ${fmt.ts(ended)}</span>
-        <span>${turns.length} records</span>
-        <span>${fmt.int(totalIn)} in · ${fmt.int(totalOut)} out · ${fmt.int(totalCacheRd)} cache rd</span>
+    <div class="flex" style="margin-bottom:14px">
+      <h2 style="margin:0;font-size:16px;letter-spacing:-0.01em">Sessions</h2>
+      <div class="spacer"></div>
+      <div class="range-tabs">
+        ${VIEWS.map(v => `<button data-view="${v.key}" class="${v.key === view ? 'active' : ''}">${v.label}</button>`).join('')}
       </div>
     </div>
+    <div id="sessions-body"></div>`;
+  root.querySelectorAll('[data-view]').forEach(btn => btn.addEventListener('click', () => {
+    localStorage.setItem(VIEW_KEY, btn.dataset.view);
+    render(root);
+  }));
+  const body = root.querySelector('#sessions-body');
+  if (view === 'project') return renderByProject(body);
+  return renderTable(body, view);
+}
 
-    <div class="card" style="margin-top:16px">
-      <h3>Turn-by-turn</h3>
+function sessionRow(s, { withProject = true } = {}) {
+  const title = s.first_prompt ? fmt.short(s.first_prompt, 90) : '—';
+  return `
+    <tr class="rowlink" data-sid="${fmt.htmlSafe(s.session_id)}">
+      <td class="mono">${fmt.ts(s.started)}</td>
+      ${withProject ? `<td title="${fmt.htmlSafe(s.project_slug)}">${fmt.htmlSafe(s.project_name || s.project_slug)}</td>` : ''}
+      <td class="blur-sensitive" title="${fmt.htmlSafe(s.first_prompt || '')}">${fmt.htmlSafe(title)}</td>
+      <td class="num">${fmt.int(s.turns)}</td>
+      <td class="num">${fmt.compact(s.tokens)}</td>
+      <td class="mono">${fmt.htmlSafe(s.session_id.slice(0, 8))}…</td>
+    </tr>`;
+}
+
+function wireRows(scope) {
+  scope.querySelectorAll('tr.rowlink').forEach(tr => {
+    tr.addEventListener('click', () => {
+      location.hash = '#/sessions/' + encodeURIComponent(tr.dataset.sid);
+    });
+  });
+}
+
+async function renderTable(body, view) {
+  const sort = view === 'turns' ? 'turns' : 'recent';
+  const list = await api(`/api/sessions?limit=100&sort=${sort}`);
+  body.innerHTML = `
+    <div class="card">
       <table>
-        <thead><tr><th>time</th><th>type</th><th>model</th><th class="blur-sensitive">prompt / tools</th><th class="num">in</th><th class="num">out</th><th class="num">cache rd</th></tr></thead>
-        <tbody>
-          ${turns.map(t => {
-            const tools = t.tool_calls_json ? JSON.parse(t.tool_calls_json) : [];
-            const summary = t.prompt_text ? fmt.short(t.prompt_text, 110)
-              : tools.length ? tools.map(x => x.name).join(' · ')
-              : '';
-            return `<tr>
-              <td class="mono">${(t.timestamp || '').slice(11,19)}</td>
-              <td>${t.type}${t.is_sidechain ? ' <span class="badge">side</span>' : ''}</td>
-              <td>${t.model ? `<span class="badge ${fmt.modelClass(t.model)}">${fmt.htmlSafe(fmt.modelShort(t.model))}</span>` : ''}</td>
-              <td class="blur-sensitive">${fmt.htmlSafe(summary)}</td>
-              <td class="num">${fmt.int(t.input_tokens)}</td>
-              <td class="num">${fmt.int(t.output_tokens)}</td>
-              <td class="num">${fmt.int(t.cache_read_tokens)}</td>
-            </tr>`;
-          }).join('')}
-        </tbody>
+        <thead><tr><th>started</th><th>project</th><th>first prompt</th><th class="num">turns</th><th class="num">tokens</th><th>session</th></tr></thead>
+        <tbody>${list.map(s => sessionRow(s)).join('')}</tbody>
       </table>
     </div>`;
+  wireRows(body);
+}
+
+async function renderByProject(body) {
+  const [list, cards] = await Promise.all([
+    api('/api/sessions?limit=500&sort=recent'),
+    api('/api/projects/cards'),
+  ]);
+  const meta = Object.fromEntries(cards.map(c => [c.project_slug, c]));
+  const groups = new Map();
+  for (const s of list) {
+    if (!groups.has(s.project_slug)) groups.set(s.project_slug, []);
+    groups.get(s.project_slug).push(s);
+  }
+  const ordered = Array.from(groups.entries())
+    .sort((a, b) => (b[1][0].ended || '').localeCompare(a[1][0].ended || ''));
+
+  body.innerHTML = ordered.map(([slug, sessions]) => {
+    const m = meta[slug] || {};
+    const name = m.project_name || sessions[0].project_name || slug;
+    const tokens = sessions.reduce((acc, s) => acc + (s.tokens || 0), 0);
+    return `
+      <details class="proj-group">
+        <summary>
+          <strong>${fmt.htmlSafe(name)}</strong>
+          <span class="muted" style="font-size:12px">${sessions.length} sessions · ${fmt.compact(tokens)} tokens${m.cost_usd != null ? ` · ${fmt.usd(m.cost_usd)}` : ''}</span>
+        </summary>
+        ${m.description ? `<div class="gdesc">${fmt.htmlSafe(m.description)}</div>` : ''}
+        <table>
+          <thead><tr><th>started</th><th>first prompt</th><th class="num">turns</th><th class="num">tokens</th><th>session</th></tr></thead>
+          <tbody>${sessions.map(s => sessionRow(s, { withProject: false })).join('')}</tbody>
+        </table>
+      </details>`;
+  }).join('') || '<div class="card muted">no sessions</div>';
+  wireRows(body);
 }

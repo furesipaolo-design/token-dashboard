@@ -2,11 +2,17 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
 from .db import connect
+
+# Scans can be triggered concurrently (startup --scan-async thread, the
+# server's filesystem watcher, and /api/scan requests); serialize them so
+# they don't contend on SQLite write locks.
+_SCAN_LOCK = threading.Lock()
 
 
 INSERT_MSG = """
@@ -243,6 +249,11 @@ def scan_file(path: Path, project_slug: str, conn, start_byte: int = 0) -> dict:
 
 
 def scan_dir(projects_root: Union[str, Path], db_path: Union[str, Path]) -> dict:
+    with _SCAN_LOCK:
+        return _scan_dir_locked(projects_root, db_path)
+
+
+def _scan_dir_locked(projects_root: Union[str, Path], db_path: Union[str, Path]) -> dict:
     root = Path(projects_root)
     totals = {"messages": 0, "tools": 0, "files": 0}
     if not root.is_dir():

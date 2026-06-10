@@ -134,6 +134,26 @@ export function groupedBarChart(el, { categories, series, formatter }) {
   return c;
 }
 
+export function sparklineChart(el, { x, values, color }) {
+  const c = mount(el);
+  c.setOption({
+    color: [color || PALETTE[0]],
+    grid: { left: 2, right: 2, top: 4, bottom: 2 },
+    tooltip: {
+      ...TOOLTIP,
+      trigger: 'axis',
+      formatter: p => `${p[0].name}<br/><b>${Number(p[0].value).toLocaleString()}</b> tokens`,
+    },
+    xAxis: { type: 'category', data: x, show: false, boundaryGap: false },
+    yAxis: { type: 'value', show: false },
+    series: [{
+      type: 'line', data: values, smooth: true, showSymbol: false,
+      lineStyle: { width: 1.5 }, areaStyle: { opacity: 0.18 },
+    }],
+  });
+  return c;
+}
+
 export function donutChart(el, data) {
   const c = mount(el);
   c.setOption({

@@ -4,17 +4,23 @@ from __future__ import annotations
 import http.server
 import json
 import mimetypes
+import os
 import queue
 import signal
 import threading
+import time
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
+
+from datetime import datetime, timedelta, timezone
 
 from .db import (
     overview_totals, expensive_prompts, project_summary,
     tool_token_breakdown, recent_sessions, session_turns,
     daily_token_breakdown, model_breakdown, skill_breakdown,
 )
+from .insights import project_files, session_overview
+from .meta import descriptions, set_description
 from .pricing import load_pricing, cost_for, get_plan, set_plan
 from .tips import all_tips, dismiss_tip
 from .scanner import scan_dir
@@ -76,6 +82,19 @@ def _clamp_limit(raw, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(1, min(v, MAX_LIMIT))
+
+
+def _apply_costs(model_rows: list, pricing: dict):
+    """Annotate per-model rows with cost; return the priced total (or None)."""
+    total, priced = 0.0, False
+    for m in model_rows:
+        c = cost_for(m["model"], m, pricing)
+        m["cost_usd"] = c["usd"]
+        m["cost_estimated"] = c["estimated"]
+        if c["usd"] is not None:
+            total += c["usd"]
+            priced = True
+    return round(total, 4) if priced else None
 
 
 def _serve_static(handler, rel: str) -> None:
@@ -147,12 +166,43 @@ def build_handler(db_path: str, projects_dir: str):
                 return _send_json(self, rows)
             if path == "/api/projects":
                 return _send_json(self, project_summary(db_path, since, until))
+            if path == "/api/projects/cards":
+                rows = project_summary(db_path, since, until)
+                descs = descriptions(db_path, [r["project_slug"] for r in rows])
+                spark_since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+                for r in rows:
+                    slug = r["project_slug"]
+                    d = descs.get(slug) or {}
+                    r["description"] = d.get("description")
+                    r["description_source"] = d.get("source")
+                    r["cost_usd"] = _apply_costs(
+                        model_breakdown(db_path, since, until, project_slug=slug), pricing)
+                    r["daily"] = [
+                        {"day": x["day"],
+                         "tokens": x["input_tokens"] + x["output_tokens"] + x["cache_create_tokens"]}
+                        for x in daily_token_breakdown(db_path, spark_since, None, project_slug=slug)
+                    ]
+                return _send_json(self, rows)
+            if path == "/api/projects/detail":
+                slug = qs.get("slug", [""])[0]
+                if not slug:
+                    return _send_error(self, 400, "missing slug")
+                models = model_breakdown(db_path, since, until, project_slug=slug)
+                cost = _apply_costs(models, pricing)
+                return _send_json(self, {
+                    "project_slug": slug,
+                    "cost_usd": cost,
+                    "models": models,
+                    "top_tools": tool_token_breakdown(db_path, since, until, project_slug=slug)[:8],
+                    "top_files": project_files(db_path, slug, limit=8),
+                })
             if path == "/api/tools":
                 return _send_json(self, tool_token_breakdown(db_path, since, until))
             if path == "/api/sessions":
                 return _send_json(self, recent_sessions(
                     db_path, limit=_clamp_limit(qs.get("limit", ["20"])[0], 20),
                     since=since, until=until,
+                    sort=qs.get("sort", ["recent"])[0],
                 ))
             if path == "/api/daily":
                 return _send_json(self, daily_token_breakdown(db_path, since, until))
@@ -171,12 +221,25 @@ def build_handler(db_path: str, projects_dir: str):
                     r["cost_estimated"] = c["estimated"]
                 return _send_json(self, rows)
             if path.startswith("/api/sessions/"):
-                sid = path.rsplit("/", 1)[1]
-                return _send_json(self, session_turns(db_path, sid))
+                rest = path[len("/api/sessions/"):]
+                if rest.endswith("/meta"):
+                    ov = session_overview(db_path, rest[: -len("/meta")])
+                    if ov.get("models") is not None:
+                        ov["cost_usd"] = _apply_costs(ov["models"], pricing)
+                    return _send_json(self, ov)
+                return _send_json(self, session_turns(db_path, rest))
             if path == "/api/tips":
                 return _send_json(self, all_tips(db_path))
             if path == "/api/plan":
-                return _send_json(self, {"plan": get_plan(db_path), "pricing": pricing})
+                try:
+                    mtime = datetime.fromtimestamp(
+                        PRICING_JSON.stat().st_mtime, tz=timezone.utc).isoformat()
+                except OSError:
+                    mtime = None
+                return _send_json(self, {
+                    "plan": get_plan(db_path), "pricing": pricing,
+                    "pricing_mtime": mtime,
+                })
             if path == "/api/scan":
                 n = scan_dir(projects_dir, db_path)
                 if n["files"]:
@@ -226,14 +289,48 @@ def build_handler(db_path: str, projects_dir: str):
             if url.path == "/api/tips/dismiss":
                 dismiss_tip(db_path, body.get("key", ""))
                 return _send_json(self, {"ok": True})
+            if url.path == "/api/projects/description":
+                slug = body.get("slug", "")
+                if not isinstance(slug, str) or not slug:
+                    return _send_error(self, 400, "missing slug")
+                desc = body.get("description", "")
+                if not isinstance(desc, str):
+                    return _send_error(self, 400, "description must be a string")
+                return _send_json(self, {"ok": True, **set_description(db_path, slug, desc)})
             self.send_response(404)
             self.end_headers()
 
     return H
 
+def watch_tick(projects_dir: str, db_path: str) -> dict:
+    """One watcher pass: incremental scan; broadcast when anything changed."""
+    n = scan_dir(projects_dir, db_path)
+    if n["files"]:
+        notify({"type": "scan", **n})
+    return n
+
+
+def _watch_loop(projects_dir: str, db_path: str, interval: float) -> None:
+    while True:
+        time.sleep(interval)
+        try:
+            watch_tick(projects_dir, db_path)
+        except Exception:
+            pass  # transient FS/DB hiccups must not kill the watcher
+
+
 def run(host: str, port: int, db_path: str, projects_dir: str):
     H = build_handler(db_path, projects_dir)
     httpd = http.server.ThreadingHTTPServer((host, port), H)
+
+    # Live updates: rescan transcripts every few seconds and push an SSE
+    # event when new data lands. scan_dir is incremental, so an idle tick
+    # costs one stat() per transcript file. Set the env var to 0 to disable.
+    interval = float(os.environ.get("TOKEN_DASHBOARD_WATCH_INTERVAL", "10"))
+    if interval > 0:
+        threading.Thread(
+            target=_watch_loop, args=(projects_dir, db_path, interval), daemon=True
+        ).start()
 
     def _handle_term(_signum, _frame):
         threading.Thread(target=httpd.shutdown, daemon=True).start()

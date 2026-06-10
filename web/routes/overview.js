@@ -110,7 +110,8 @@ export default async function (root) {
       <div class="card"><h3>Tokens by project</h3><div id="ch-projects" style="height:320px"></div></div>
       <div class="card">
         <h3>Token usage by model</h3>
-        <p class="muted" style="margin:-4px 0 4px;font-size:12px">Share of billable tokens per Claude model.</p>
+        <p class="muted" style="margin:-4px 0 4px;font-size:12px">Share of billable tokens per model. Non-Claude models are grouped as “other providers”.
+          <span title="Models from Opus 4.7 onwards (incl. Fable 5) use a tokenizer that produces ~30% more tokens for the same text — token comparisons across model generations can mislead; costs are unaffected." style="cursor:help">ⓘ</span></p>
         <div id="ch-model" style="height:300px"></div>
       </div>
     </div>
@@ -157,14 +158,24 @@ export default async function (root) {
     ],
   });
 
-  // by-model doughnut
-  donutChart(document.getElementById('ch-model'),
-    byModel.map(m => ({
-      name: fmt.modelShort(m.model) || 'unknown',
-      value: (m.input_tokens || 0) + (m.output_tokens || 0)
-           + (m.cache_create_5m_tokens || 0) + (m.cache_create_1h_tokens || 0),
-    })).filter(d => d.value > 0),
-  );
+  // by-model doughnut — non-Claude models collapse into one slice
+  const modelSlices = [];
+  let otherTokens = 0, otherCount = 0;
+  for (const m of byModel) {
+    const v = (m.input_tokens || 0) + (m.output_tokens || 0)
+            + (m.cache_create_5m_tokens || 0) + (m.cache_create_1h_tokens || 0);
+    if (v <= 0) continue;
+    if (fmt.isClaude(m.model)) {
+      modelSlices.push({ name: fmt.modelShort(m.model) || 'unknown', value: v });
+    } else {
+      otherTokens += v;
+      otherCount += 1;
+    }
+  }
+  if (otherTokens > 0) {
+    modelSlices.push({ name: `other providers (${otherCount})`, value: otherTokens });
+  }
+  donutChart(document.getElementById('ch-model'), modelSlices);
 
   // tokens by project — input vs output
   const topProjects = projects.slice(0, 8);

@@ -72,6 +72,14 @@ CREATE TABLE IF NOT EXISTS dismissed_tips (
   tip_key       TEXT PRIMARY KEY,
   dismissed_at  REAL NOT NULL
 );
+
+-- Manual project-description overrides. Auto-extracted descriptions
+-- (CLAUDE.md / README.md) are computed on request and never stored.
+CREATE TABLE IF NOT EXISTS project_meta (
+  project_slug  TEXT PRIMARY KEY,
+  description   TEXT NOT NULL,
+  updated_at    REAL NOT NULL
+);
 """
 
 
@@ -131,8 +139,9 @@ def _range_clause(since, until, col: str = "timestamp"):
 
 
 def _encode_slug(path: str) -> str:
-    """Claude Code's project-slug encoding: each of `:`, `\\`, `/`, space → one `-`."""
-    return re.sub(r"[:\\/ ]", "-", path)
+    """Claude Code's project-slug encoding: every non-alphanumeric char → one `-`
+    (observed: `/`, `\\`, `:`, space, `_`, and `.` all become dashes)."""
+    return re.sub(r"[^A-Za-z0-9]", "-", path)
 
 
 def _walk_to_root(cwd: str, slug: str) -> Optional[str]:
@@ -169,6 +178,21 @@ def project_name_for(cwd: Optional[str], fallback_slug: str) -> str:
         if parts:
             return parts[-1]
     return fallback_slug or ""
+
+
+def project_root_path(cwds, slug: str) -> Optional[str]:
+    """Full filesystem path of the project root: the ancestor of any cwd
+    whose slug-encoding matches. None when no cwd descends from the root
+    (e.g. the directory was renamed after the sessions ran)."""
+    for cwd in (c for c in (cwds or []) if c):
+        trimmed = cwd.rstrip("/\\")
+        sep = "\\" if "\\" in trimmed else "/"
+        parts = trimmed.split(sep)
+        for i in range(len(parts), 0, -1):
+            candidate = sep.join(parts[:i])
+            if _encode_slug(candidate) == slug:
+                return candidate
+    return None
 
 
 def best_project_name(cwds, slug: str) -> str:
@@ -253,32 +277,53 @@ def project_summary(db_path, since=None, until=None) -> list:
     return rows
 
 
-def tool_token_breakdown(db_path, since=None, until=None) -> list:
+def _slug_clause(project_slug):
+    """Optional per-project filter, appended after a WHERE ... block."""
+    if project_slug:
+        return " AND project_slug = ?", [project_slug]
+    return "", []
+
+
+def tool_token_breakdown(db_path, since=None, until=None, project_slug=None) -> list:
     rng, args = _range_clause(since, until)
+    slug_sql, slug_args = _slug_clause(project_slug)
     sql = f"""
       SELECT tool_name,
              COUNT(*) AS calls,
              COALESCE(SUM(result_tokens),0) AS result_tokens
         FROM tool_calls
-       WHERE tool_name != '_tool_result' {rng}
+       WHERE tool_name != '_tool_result' {rng} {slug_sql}
        GROUP BY tool_name
        ORDER BY calls DESC
     """
     with connect(db_path) as c:
-        return [dict(r) for r in c.execute(sql, args)]
+        return [dict(r) for r in c.execute(sql, (*args, *slug_args))]
 
 
-def recent_sessions(db_path, limit: int = 20, since=None, until=None) -> list:
+_SESSION_SORTS = {
+    "recent": "ended DESC",
+    "turns":  "turns DESC, ended DESC",
+    "tokens": "tokens DESC, ended DESC",
+}
+
+
+def recent_sessions(db_path, limit: int = 20, since=None, until=None, sort: str = "recent") -> list:
     rng, args = _range_clause(since, until)
+    order = _SESSION_SORTS.get(sort, _SESSION_SORTS["recent"])
     sql = f"""
       SELECT session_id, project_slug,
              MIN(timestamp) AS started, MAX(timestamp) AS ended,
              SUM(CASE WHEN type='user' THEN 1 ELSE 0 END) AS turns,
-             SUM(input_tokens)+SUM(output_tokens) AS tokens
+             SUM(input_tokens)+SUM(output_tokens) AS tokens,
+             (SELECT p.prompt_text FROM messages p
+               WHERE p.session_id = m.session_id AND p.type = 'user'
+                 AND p.prompt_text IS NOT NULL AND p.prompt_text != ''
+                 AND p.prompt_text NOT LIKE '<%'
+               ORDER BY p.timestamp ASC LIMIT 1) AS first_prompt
         FROM messages m
        WHERE 1=1 {rng}
        GROUP BY session_id
-       ORDER BY ended DESC
+       ORDER BY {order}
        LIMIT ?
     """
     with connect(db_path) as c:
@@ -311,9 +356,10 @@ def session_turns(db_path, session_id: str) -> list:
         return [dict(r) for r in c.execute(sql, (session_id,))]
 
 
-def daily_token_breakdown(db_path, since=None, until=None) -> list:
+def daily_token_breakdown(db_path, since=None, until=None, project_slug=None) -> list:
     """One row per day: stacked bar data for input/output/cache_read/cache_create."""
     rng, args = _range_clause(since, until)
+    slug_sql, slug_args = _slug_clause(project_slug)
     sql = f"""
       SELECT substr(timestamp, 1, 10) AS day,
              COALESCE(SUM(input_tokens),0)      AS input_tokens,
@@ -322,12 +368,12 @@ def daily_token_breakdown(db_path, since=None, until=None) -> list:
              COALESCE(SUM(cache_create_5m_tokens),0)
                + COALESCE(SUM(cache_create_1h_tokens),0) AS cache_create_tokens
         FROM messages
-       WHERE timestamp IS NOT NULL {rng}
+       WHERE timestamp IS NOT NULL {rng} {slug_sql}
        GROUP BY day
        ORDER BY day ASC
     """
     with connect(db_path) as c:
-        return [dict(r) for r in c.execute(sql, args)]
+        return [dict(r) for r in c.execute(sql, (*args, *slug_args))]
 
 
 def skill_breakdown(db_path, since=None, until=None) -> list:
@@ -356,9 +402,14 @@ def skill_breakdown(db_path, since=None, until=None) -> list:
         return [dict(r) for r in c.execute(sql, args)]
 
 
-def model_breakdown(db_path, since=None, until=None) -> list:
-    """Per-model token totals + turn count. Caller computes cost via pricing."""
+def model_breakdown(db_path, since=None, until=None, project_slug=None) -> list:
+    """Per-model token totals + turn count. Caller computes cost via pricing.
+
+    `<synthetic>` is Claude Code's placeholder for harness-generated records
+    (no real API call, all-zero usage) — excluded from every breakdown.
+    """
     rng, args = _range_clause(since, until)
+    slug_sql, slug_args = _slug_clause(project_slug)
     sql = f"""
       SELECT COALESCE(model, 'unknown') AS model,
              COUNT(*) AS turns,
@@ -368,9 +419,9 @@ def model_breakdown(db_path, since=None, until=None) -> list:
              COALESCE(SUM(cache_create_5m_tokens),0)  AS cache_create_5m_tokens,
              COALESCE(SUM(cache_create_1h_tokens),0)  AS cache_create_1h_tokens
         FROM messages
-       WHERE type = 'assistant' {rng}
+       WHERE type = 'assistant' AND COALESCE(model, '') != '<synthetic>' {rng} {slug_sql}
        GROUP BY model
        ORDER BY (input_tokens + output_tokens + cache_create_5m_tokens + cache_create_1h_tokens) DESC
     """
     with connect(db_path) as c:
-        return [dict(r) for r in c.execute(sql, args)]
+        return [dict(r) for r in c.execute(sql, (*args, *slug_args))]

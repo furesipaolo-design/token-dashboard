@@ -1,5 +1,15 @@
 import { api, state, $ } from '/web/app.js';
 
+function pricingFreshness(mtime) {
+  if (!mtime) return '';
+  const days = Math.floor((Date.now() - new Date(mtime)) / 86400000);
+  const stale = days > 60;
+  return `<p class="muted" style="margin:0 0 12px;font-size:12px">
+    Last updated: <b>${mtime.slice(0, 10)}</b> (${days} days ago)${stale
+      ? ' — <span style="color:var(--warn)">might be stale; check current rates on platform.claude.com</span>'
+      : ''}</p>`;
+}
+
 export default async function (root) {
   const cur = await api('/api/plan');
   const plans = Object.entries(cur.pricing.plans);
@@ -20,6 +30,7 @@ export default async function (root) {
 
       <h3>Pricing table</h3>
       <p class="muted" style="margin:0 0 12px">Edit <code>pricing.json</code> in the project root to change rates. Reload the page after editing.</p>
+      ${pricingFreshness(cur.pricing_mtime)}
       <table>
         <thead><tr><th>model</th><th class="num">input</th><th class="num">output</th><th class="num">cache read</th><th class="num">cache 5m</th><th class="num">cache 1h</th></tr></thead>
         <tbody>
