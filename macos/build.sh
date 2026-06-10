@@ -71,6 +71,17 @@ echo "==> Signing (ad-hoc)"
 codesign --force --sign - "$APP_DIR"
 
 if [[ "${1:-}" == "--install" ]]; then
+  # Installing over a running instance leaves the OLD app + server alive:
+  # relaunching just activates the stale process and the old backend serves
+  # the new frontend files — quit it first so the next launch is the new build.
+  if pgrep -fq "/Applications/$APP_NAME.app/Contents/MacOS/$APP_NAME"; then
+    echo "==> Quitting running $APP_NAME (so the new build actually loads)"
+    osascript -e "quit app \"$APP_NAME\"" >/dev/null 2>&1 || true
+    for _ in {1..20}; do
+      pgrep -fq "/Applications/$APP_NAME.app/Contents/MacOS/$APP_NAME" || break
+      sleep 0.25
+    done
+  fi
   echo "==> Installing into /Applications"
   rm -rf "/Applications/$APP_NAME.app"
   ditto "$APP_DIR" "/Applications/$APP_NAME.app"

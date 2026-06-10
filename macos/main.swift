@@ -48,6 +48,7 @@ func probeDashboard(timeout: TimeInterval, _ completion: @escaping (Bool) -> Voi
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate {
     var window: NSWindow!
     var webView: WKWebView!
+    var loadingView: NSView!
     var spinner: NSProgressIndicator!
     var statusLabel: NSTextField!
     var serverProcess: Process?
@@ -79,8 +80,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             backing: .buffered, defer: false)
         window.title = "Token Dashboard"
         window.minSize = NSSize(width: 760, height: 480)
+        // center() only on first launch — after setFrameAutosaveName restores
+        // the saved frame, centering would discard the saved position.
+        let restored = window.setFrameUsingName("TokenDashboardMain")
         window.setFrameAutosaveName("TokenDashboardMain")
-        window.center()
+        if !restored { window.center() }
 
         let conf = WKWebViewConfiguration()
         conf.preferences.setValue(true, forKey: "developerExtrasEnabled")
@@ -90,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         webView.allowsMagnification = true
 
         let loading = NSView()
+        loadingView = loading
         spinner = NSProgressIndicator()
         spinner.style = .spinning
         spinner.startAnimation(nil)
@@ -163,7 +168,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         env["PORT"] = String(PORT)
         p.environment = env
 
-        FileManager.default.createFile(atPath: logFileURL().path, contents: nil)
+        // Append, don't truncate: the log is the only diagnostic the failure
+        // alert points at, and truncating on relaunch wiped the crash trail.
+        if !FileManager.default.fileExists(atPath: logFileURL().path) {
+            FileManager.default.createFile(atPath: logFileURL().path, contents: nil)
+        }
         if let log = try? FileHandle(forWritingTo: logFileURL()) {
             log.seekToEndOfFile()
             p.standardOutput = log
@@ -172,7 +181,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         p.terminationHandler = { [weak self] proc in
             DispatchQueue.main.async {
                 guard let self, !self.isQuitting else { return }
-                self.fail("Il server locale si è chiuso in modo inatteso (exit \(proc.terminationStatus)).")
+                // A bind failure usually means the 0.6s startup probe missed
+                // a busy-but-alive server (e.g. mid-scan). Re-probe patiently
+                // before declaring failure.
+                probeDashboard(timeout: 3) { running in
+                    DispatchQueue.main.async {
+                        if running {
+                            self.showDashboard()
+                        } else {
+                            self.fail("Il server locale si è chiuso in modo inatteso (exit \(proc.terminationStatus)). "
+                                + "Se la porta \(PORT) è occupata da un altro programma, chiudilo e riapri l'app.")
+                        }
+                    }
+                }
             }
         }
         do {
@@ -199,6 +220,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 }
             }
         }
+    }
+
+    // MARK: load failures — a blank window with no message is the worst outcome
+
+    func handleLoadFailure(_ error: Error) {
+        let code = (error as NSError).code
+        if code == NSURLErrorCancelled { return } // normal navigation interruption
+        statusLabel.stringValue = "Connessione al server persa — riprovo…"
+        spinner.startAnimation(nil)
+        window.contentView = loadingView
+        waitUntilHealthy(deadline: Date().addingTimeInterval(STARTUP_DEADLINE))
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        handleLoadFailure(error)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        handleLoadFailure(error)
     }
 
     // MARK: navigation — keep the webview on the local dashboard, push the rest to the browser
