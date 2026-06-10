@@ -127,6 +127,23 @@ class EndpointTests(unittest.TestCase):
         ov = self._get("/api/sessions/s1/meta")
         self.assertIsInstance(ov["tips"], list)
 
+    def test_archive_roundtrip(self):
+        self.assertFalse(self._get("/api/projects/cards")[0]["archived"])
+        out = self._post("/api/projects/archive", {"slug": "p", "archived": True})
+        self.assertTrue(out["archived"])
+        self.assertTrue(self._get("/api/projects/cards")[0]["archived"])
+        out = self._post("/api/projects/archive", {"slug": "p", "archived": False})
+        self.assertFalse(out["archived"])
+        self.assertFalse(self._get("/api/projects/cards")[0]["archived"])
+
+    def test_archive_validates_input(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self._post("/api/projects/archive", {"archived": True})
+        self.assertEqual(ctx.exception.code, 400)
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self._post("/api/projects/archive", {"slug": "p", "archived": "yes"})
+        self.assertEqual(ctx.exception.code, 400)
+
 
 class WatchTickTests(unittest.TestCase):
     def test_tick_scans_and_notifies(self):

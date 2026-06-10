@@ -20,7 +20,7 @@ from .db import (
     daily_token_breakdown, model_breakdown, skill_breakdown,
 )
 from .insights import project_files, session_overview, session_tips, turn_detail
-from .meta import descriptions, set_description
+from .meta import archived_slugs, descriptions, set_archived, set_description
 from .pricing import load_pricing, cost_for, get_plan, set_plan
 from .tips import all_tips, dismiss_tip
 from .scanner import scan_dir
@@ -178,12 +178,14 @@ def build_handler(db_path: str, projects_dir: str):
             if path == "/api/projects/cards":
                 rows = project_summary(db_path, since, until)
                 descs = descriptions(db_path, [r["project_slug"] for r in rows])
+                archived = archived_slugs(db_path)
                 spark_since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
                 for r in rows:
                     slug = r["project_slug"]
                     d = descs.get(slug) or {}
                     r["description"] = d.get("description")
                     r["description_source"] = d.get("source")
+                    r["archived"] = slug in archived
                     r["cost_usd"] = _apply_costs(
                         model_breakdown(db_path, since, until, project_slug=slug), pricing)
                     r["daily"] = [
@@ -312,6 +314,14 @@ def build_handler(db_path: str, projects_dir: str):
                 if not isinstance(desc, str):
                     return _send_error(self, 400, "description must be a string")
                 return _send_json(self, {"ok": True, **set_description(db_path, slug, desc)})
+            if url.path == "/api/projects/archive":
+                slug = body.get("slug", "")
+                if not isinstance(slug, str) or not slug:
+                    return _send_error(self, 400, "missing slug")
+                archived = body.get("archived", True)
+                if not isinstance(archived, bool):
+                    return _send_error(self, 400, "archived must be a boolean")
+                return _send_json(self, {"ok": True, "archived": set_archived(db_path, slug, archived)})
             self.send_response(404)
             self.end_headers()
 

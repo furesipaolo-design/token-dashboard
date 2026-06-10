@@ -96,6 +96,24 @@ def descriptions(db_path: Union[str, Path], slugs: list) -> dict:
     return out
 
 
+def archived_slugs(db_path: Union[str, Path]) -> set:
+    with connect(db_path) as c:
+        return {r["project_slug"] for r in c.execute("SELECT project_slug FROM archived_projects")}
+
+
+def set_archived(db_path: Union[str, Path], slug: str, archived: bool) -> bool:
+    with connect(db_path) as c:
+        if archived:
+            c.execute(
+                "INSERT OR REPLACE INTO archived_projects (project_slug, archived_at) VALUES (?, ?)",
+                (slug, time.time()),
+            )
+        else:
+            c.execute("DELETE FROM archived_projects WHERE project_slug=?", (slug,))
+        c.commit()
+    return archived
+
+
 def set_description(db_path: Union[str, Path], slug: str, text: str) -> dict:
     """Store a manual override; empty text clears it (back to auto).
     Returns the resolved {description, source} after the change."""

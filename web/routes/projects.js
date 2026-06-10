@@ -2,8 +2,10 @@ import { api, fmt, $ } from '/web/app.js';
 import { donutChart, sparklineChart, stackedBarChart } from '/web/charts.js';
 
 const VIEW_KEY = 'td.projects-view';
+let pageRoot = null;
 
 export default async function render(root) {
+  pageRoot = root;
   const view = localStorage.getItem(VIEW_KEY) === 'cards' ? 'cards' : 'list';
   root.innerHTML = `
     <div class="flex" style="margin-bottom:14px">
@@ -19,41 +21,78 @@ export default async function render(root) {
     localStorage.setItem(VIEW_KEY, btn.dataset.view);
     render(root);
   }));
+
   const body = $('#projects-body', root);
-  if (view === 'cards') await renderCards(body);
-  else await renderList(body);
-}
-
-async function renderList(body) {
-  const rows = await api('/api/projects');
-  body.innerHTML = `
-    <div class="card">
-      <p class="muted" style="margin:0 0 14px">Sorted by billable token spend. Cache reads are billed cheaper, so high cache-read columns are good.</p>
-      <table>
-        <thead><tr><th>project</th><th class="num">sessions</th><th class="num">turns</th><th class="num">billable tokens</th><th class="num">cache reads</th></tr></thead>
-        <tbody>
-          ${rows.map(r => `
-            <tr>
-              <td title="${fmt.htmlSafe(r.project_slug)}">${fmt.htmlSafe(r.project_name || r.project_slug)}</td>
-              <td class="num">${fmt.int(r.sessions)}</td>
-              <td class="num">${fmt.int(r.turns)}</td>
-              <td class="num">${fmt.int(r.billable_tokens)}</td>
-              <td class="num">${fmt.int(r.cache_read_tokens)}</td>
-            </tr>`).join('')}
-        </tbody>
-      </table>
-    </div>`;
-}
-
-async function renderCards(body) {
   const rows = await api('/api/projects/cards');
-  body.innerHTML = `
-    <p class="muted" style="margin:0 0 12px">One card per project — sparkline is billable tokens over the last 30 days. Click a card for the full project sum-up. ✎ edits the description.</p>
+  const active = rows.filter(r => !r.archived);
+  const archived = rows.filter(r => r.archived);
+  if (view === 'cards') renderCards(body, active);
+  else renderList(body, active);
+  body.insertAdjacentHTML('beforeend', archivedSection(archived));
+  wireArchived(body, archived);
+}
+
+const rerender = () => { if (pageRoot) render(pageRoot); };
+
+function projectRow(r, { restore = false } = {}) {
+  return `
+    <tr class="rowlink" data-slug="${fmt.htmlSafe(r.project_slug)}">
+      <td title="${fmt.htmlSafe(r.project_slug)}">${fmt.htmlSafe(r.project_name || r.project_slug)}</td>
+      <td class="num" style="color:var(--good)">${fmt.usd(r.cost_usd)}</td>
+      <td class="num">${fmt.int(r.sessions)}</td>
+      <td class="num">${fmt.int(r.turns)}</td>
+      <td class="num">${fmt.int(r.billable_tokens)}</td>
+      <td class="num">${fmt.int(r.cache_read_tokens)}</td>
+      <td class="num">
+        <button class="ghost" data-archive="${restore ? 'false' : 'true'}"
+                title="${restore ? 'Restore to the main list' : 'Archive this project'}">
+          ${restore ? '↩ restore' : '📦'}
+        </button>
+      </td>
+    </tr>`;
+}
+
+const TABLE_HEAD = `
+  <thead><tr><th>project</th><th class="num">est. cost</th><th class="num">sessions</th>
+  <th class="num">turns</th><th class="num">billable tokens</th><th class="num">cache reads</th><th></th></tr></thead>`;
+
+function renderList(body, rows) {
+  body.insertAdjacentHTML('beforeend', `
+    <div class="card">
+      <p class="muted" style="margin:0 0 14px">Sorted by billable token spend. Click a row for the project sum-up; 📦 archives old projects.</p>
+      <table>
+        ${TABLE_HEAD}
+        <tbody>${rows.map(r => projectRow(r)).join('') || '<tr><td colspan="7" class="muted">no active projects</td></tr>'}</tbody>
+      </table>
+    </div>`);
+  wireProjectRows(body.lastElementChild, rows);
+}
+
+function wireProjectRows(scope, rows) {
+  const bySlug = Object.fromEntries(rows.map(r => [r.project_slug, r]));
+  scope.querySelectorAll('tr.rowlink').forEach(tr => {
+    const r = bySlug[tr.dataset.slug];
+    tr.addEventListener('click', e => {
+      if (e.target.closest('[data-archive]')) return;
+      openProjectModal(r);
+    });
+    const btn = tr.querySelector('[data-archive]');
+    if (btn) btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      await setArchived(r.project_slug, btn.dataset.archive === 'true');
+    });
+  });
+}
+
+function renderCards(body, rows) {
+  body.insertAdjacentHTML('beforeend', `
+    <p class="muted" style="margin:0 0 12px">One card per project — sparkline is billable tokens over the last 30 days. Click a card for the full project sum-up. ✎ edits the description, 📦 archives.</p>
     <div class="cards-grid">
       ${rows.map((r, i) => `
         <div class="card proj-card" data-i="${i}">
           <h3 style="margin-bottom:2px" title="${fmt.htmlSafe(r.project_slug)}">
             ${fmt.htmlSafe(r.project_name || r.project_slug)}
+            <a class="edit-desc" href="#" data-archive-card title="Archive this project">📦</a>
             <a class="edit-desc" href="#" data-edit title="Edit description">✎</a>
           </h3>
           <div class="desc" data-desc>${r.description ? fmt.htmlSafe(r.description) : '<span class="muted">no description — ✎ to add one</span>'}</div>
@@ -63,8 +102,8 @@ async function renderCards(body) {
             <span><b>${fmt.compact(r.billable_tokens)}</b> tokens</span>
           </div>
           <div class="spark" style="height:48px"></div>
-        </div>`).join('')}
-    </div>`;
+        </div>`).join('') || '<p class="muted">no active projects</p>'}
+    </div>`);
 
   for (const el of body.querySelectorAll('.proj-card')) {
     const r = rows[Number(el.dataset.i)];
@@ -78,15 +117,48 @@ async function renderCards(body) {
       el.querySelector('.spark').innerHTML = '<span class="muted" style="font-size:11px">no activity in the last 30 days</span>';
     }
     el.addEventListener('click', e => {
-      if (e.target.closest('[data-edit]') || e.target.closest('.desc-form')) return;
+      if (e.target.closest('[data-edit]') || e.target.closest('[data-archive-card]') || e.target.closest('.desc-form')) return;
       openProjectModal(r);
     });
     el.querySelector('[data-edit]').addEventListener('click', e => {
       e.preventDefault();
       e.stopPropagation();
-      editDescription(el, r);
+      editDescription(el.querySelector('[data-desc]'), r);
+    });
+    el.querySelector('[data-archive-card]').addEventListener('click', async e => {
+      e.preventDefault();
+      e.stopPropagation();
+      await setArchived(r.project_slug, true);
     });
   }
+}
+
+function archivedSection(archived) {
+  if (!archived.length) return '';
+  return `
+    <details class="proj-group" style="margin-top:18px" id="archived-projects">
+      <summary>
+        <strong>Archived projects</strong>
+        <span class="muted" style="font-size:12px">${archived.length} — hidden from the main view, still sorted by billable tokens</span>
+      </summary>
+      <table>
+        ${TABLE_HEAD}
+        <tbody>${archived.map(r => projectRow(r, { restore: true })).join('')}</tbody>
+      </table>
+    </details>`;
+}
+
+function wireArchived(body, archived) {
+  const section = body.querySelector('#archived-projects');
+  if (section) wireProjectRows(section, archived);
+}
+
+async function setArchived(slug, archived) {
+  await api('/api/projects/archive', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slug, archived }),
+  });
+  rerender();
 }
 
 async function openProjectModal(r) {
@@ -96,10 +168,14 @@ async function openProjectModal(r) {
     <div class="modal wide">
       <div class="flex">
         <h2 style="margin:0">${fmt.htmlSafe(r.project_name || r.project_slug)}</h2>
+        <a class="edit-desc" href="#" data-edit title="Edit description" style="float:none">✎</a>
         <span class="spacer"></span>
+        <button data-archive-modal title="${r.archived ? 'Restore to the main list' : 'Move to the archived list'}">
+          ${r.archived ? '↩ Restore' : '📦 Archive'}
+        </button>
         <button class="close-x" title="Close (Esc)">✕</button>
       </div>
-      ${r.description ? `<p class="muted" style="margin:6px 0 0">${fmt.htmlSafe(r.description)}</p>` : ''}
+      <p class="muted" data-desc style="margin:6px 0 0">${r.description ? fmt.htmlSafe(r.description) : '<span class="muted">no description — ✎ to add one</span>'}</p>
       <div class="kpis">
         <span class="cost"><b>${fmt.usd(r.cost_usd)}</b> est. cost</span>
         <span><b>${fmt.int(r.sessions)}</b> sessions</span>
@@ -116,6 +192,14 @@ async function openProjectModal(r) {
   document.addEventListener('keydown', onKey);
   overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
   overlay.querySelector('.close-x').addEventListener('click', close);
+  overlay.querySelector('[data-edit]').addEventListener('click', e => {
+    e.preventDefault();
+    editDescription(overlay.querySelector('[data-desc]'), r);
+  });
+  overlay.querySelector('[data-archive-modal]').addEventListener('click', async () => {
+    await setArchived(r.project_slug, !r.archived);
+    close();
+  });
 
   const d = await api('/api/projects/detail?slug=' + encodeURIComponent(r.project_slug));
   const pm = overlay.querySelector('#pm-body');
@@ -180,9 +264,9 @@ async function openProjectModal(r) {
   else overlay.querySelector('#pm-models').innerHTML = '<span class="muted" style="font-size:12px">no model data</span>';
 }
 
-function editDescription(el, r) {
-  const descEl = el.querySelector('[data-desc]');
-  if (el.querySelector('.desc-form')) return;
+// Inline description editor — works on any [data-desc] container (card or modal).
+function editDescription(descEl, r) {
+  if (descEl.parentElement.querySelector('.desc-form')) return;
   const form = document.createElement('div');
   form.className = 'desc-form';
   form.innerHTML = `
@@ -208,6 +292,9 @@ function editDescription(el, r) {
     descEl.innerHTML = fmt.htmlSafe(res.description || '') ||
       '<span class="muted">no description — ✎ to add one</span>';
     close();
+    // The modal floats over the page: re-render it behind so the card/list
+    // shows the new description too (the modal itself is left untouched).
+    if (descEl.closest('.modal')) rerender();
   };
   form.querySelector('[data-save]').addEventListener('click', () => save(form.querySelector('textarea').value));
   form.querySelector('[data-cancel]').addEventListener('click', close);

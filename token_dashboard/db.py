@@ -80,6 +80,13 @@ CREATE TABLE IF NOT EXISTS project_meta (
   description   TEXT NOT NULL,
   updated_at    REAL NOT NULL
 );
+
+-- Projects the user parked out of the main Projects view (old work,
+-- deleted folders). Reversible; scan data is untouched.
+CREATE TABLE IF NOT EXISTS archived_projects (
+  project_slug  TEXT PRIMARY KEY,
+  archived_at   REAL NOT NULL
+);
 """
 
 
