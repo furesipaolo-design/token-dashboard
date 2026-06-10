@@ -3,7 +3,7 @@ import { api, fmt } from '/web/app.js';
 const VIEW_KEY = 'td.sessions-view';
 const VIEWS = [
   { key: 'recent',  label: 'Recent' },
-  { key: 'turns',   label: 'By turns' },
+  { key: 'tokens',  label: 'By tokens' },
   { key: 'project', label: 'By project' },
 ];
 
@@ -59,7 +59,7 @@ function wireRows(scope) {
 }
 
 async function renderTable(body, view) {
-  const sort = view === 'turns' ? 'turns' : 'recent';
+  const sort = view === 'tokens' ? 'tokens' : 'recent';
   const list = await api(`/api/sessions?limit=100&sort=${sort}`);
   body.innerHTML = `
     <div class="card">

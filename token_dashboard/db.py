@@ -226,28 +226,32 @@ def overview_totals(db_path, since=None, until=None) -> dict:
         return dict(c.execute(sql, args).fetchone())
 
 
-def expensive_prompts(db_path, limit: int = 50, sort: str = "tokens") -> list:
+def expensive_prompts(db_path, limit: int = 50, sort: str = "tokens", session_id=None) -> list:
     """User prompt joined with the immediately-following assistant turn's tokens.
 
     sort="tokens" (default) → largest billable first.
     sort="recent"           → newest first.
+    session_id              → only prompts from that session.
     """
     order = "u.timestamp DESC" if sort == "recent" else "billable_tokens DESC"
+    sess_sql, sess_args = ("", [])
+    if session_id:
+        sess_sql, sess_args = " AND u.session_id = ?", [session_id]
     sql = f"""
       SELECT u.uuid AS user_uuid, u.session_id, u.project_slug, u.timestamp,
-             u.prompt_text, u.prompt_chars,
+             u.prompt_text, u.prompt_chars, u.prompt_id,
              a.uuid AS assistant_uuid, a.model,
              COALESCE(a.input_tokens,0)+COALESCE(a.output_tokens,0)
                +COALESCE(a.cache_create_5m_tokens,0)+COALESCE(a.cache_create_1h_tokens,0) AS billable_tokens,
              COALESCE(a.cache_read_tokens,0) AS cache_read_tokens
         FROM messages u
         JOIN messages a ON a.parent_uuid = u.uuid AND a.type='assistant'
-       WHERE u.type='user' AND u.prompt_text IS NOT NULL
+       WHERE u.type='user' AND u.prompt_text IS NOT NULL {sess_sql}
        ORDER BY {order}
        LIMIT ?
     """
     with connect(db_path) as c:
-        return [dict(r) for r in c.execute(sql, (limit,))]
+        return [dict(r) for r in c.execute(sql, (*sess_args, limit))]
 
 
 def project_summary(db_path, since=None, until=None) -> list:
@@ -307,8 +311,10 @@ _SESSION_SORTS = {
 }
 
 
-def recent_sessions(db_path, limit: int = 20, since=None, until=None, sort: str = "recent") -> list:
+def recent_sessions(db_path, limit: int = 20, since=None, until=None,
+                    sort: str = "recent", project_slug=None) -> list:
     rng, args = _range_clause(since, until)
+    slug_sql, slug_args = _slug_clause(project_slug)
     order = _SESSION_SORTS.get(sort, _SESSION_SORTS["recent"])
     sql = f"""
       SELECT session_id, project_slug,
@@ -321,13 +327,13 @@ def recent_sessions(db_path, limit: int = 20, since=None, until=None, sort: str 
                  AND p.prompt_text NOT LIKE '<%'
                ORDER BY p.timestamp ASC LIMIT 1) AS first_prompt
         FROM messages m
-       WHERE 1=1 {rng}
+       WHERE 1=1 {rng} {slug_sql}
        GROUP BY session_id
        ORDER BY {order}
        LIMIT ?
     """
     with connect(db_path) as c:
-        rows = [dict(r) for r in c.execute(sql, (*args, limit))]
+        rows = [dict(r) for r in c.execute(sql, (*args, *slug_args, limit))]
         # Cache per-slug name lookups so we don't query once per session.
         slug_cache = {}
         for r in rows:
@@ -345,7 +351,7 @@ def recent_sessions(db_path, limit: int = 20, since=None, until=None, sort: str 
 def session_turns(db_path, session_id: str) -> list:
     sql = """
       SELECT uuid, parent_uuid, type, timestamp, model, is_sidechain, agent_id,
-             input_tokens, output_tokens, cache_read_tokens,
+             prompt_id, input_tokens, output_tokens, cache_read_tokens,
              cache_create_5m_tokens, cache_create_1h_tokens,
              prompt_text, prompt_chars, tool_calls_json, project_slug, cwd
         FROM messages

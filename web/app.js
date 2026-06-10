@@ -40,11 +40,12 @@ export async function api(path, opts) {
 
 export const state = { plan: 'api', pricing: null };
 
+// Macro → micro: overview, then projects, then sessions, then single prompts.
 const ROUTES = {
   '/overview': () => import('/web/routes/overview.js'),
-  '/prompts':  () => import('/web/routes/prompts.js'),
-  '/sessions': () => import('/web/routes/sessions.js'),
   '/projects': () => import('/web/routes/projects.js'),
+  '/sessions': () => import('/web/routes/sessions.js'),
+  '/prompts':  () => import('/web/routes/prompts.js'),
   '/skills':   () => import('/web/routes/skills.js'),
   '/tips':     () => import('/web/routes/tips.js'),
   '/settings': () => import('/web/routes/settings.js'),

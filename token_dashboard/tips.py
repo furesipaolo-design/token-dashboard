@@ -3,9 +3,22 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List, Optional
 
 from .db import connect
+from .pricing import load_pricing
+
+_PRICING_JSON = Path(__file__).resolve().parent.parent / "pricing.json"
+
+
+def _tier_rates(tier: str, fallback: tuple) -> tuple:
+    """(input, output) $/MTok for a tier, from pricing.json with a safe fallback."""
+    try:
+        rates = load_pricing(_PRICING_JSON)["tier_fallback"][tier]
+        return rates["input"], rates["output"]
+    except (OSError, KeyError, ValueError):
+        return fallback
 
 
 def _iso_days_ago(today_iso: str, n: int) -> str:
@@ -121,8 +134,10 @@ def right_size_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
         row = c.execute(sql, (since,)).fetchone()
     if not row or (row["n"] or 0) < 10:
         return []
-    api_opus   = ((row["in_tok"] or 0) * 15 + (row["out_tok"] or 0) * 75) / 1_000_000
-    api_sonnet = ((row["in_tok"] or 0) *  3 + (row["out_tok"] or 0) * 15) / 1_000_000
+    opus_in, opus_out = _tier_rates("opus", (5.0, 25.0))
+    sonnet_in, sonnet_out = _tier_rates("sonnet", (3.0, 15.0))
+    api_opus   = ((row["in_tok"] or 0) * opus_in + (row["out_tok"] or 0) * opus_out) / 1_000_000
+    api_sonnet = ((row["in_tok"] or 0) * sonnet_in + (row["out_tok"] or 0) * sonnet_out) / 1_000_000
     savings = api_opus - api_sonnet
     if savings < 1.0:
         return []

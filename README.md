@@ -107,12 +107,12 @@ Change the port: `PORT=9000 python3 cli.py dashboard`.
 
 ## The 7 tabs
 
-The dashboard is a single page with a hash-router tab bar across the top. Each tab is backed by its own JSON API under `/api/`:
+The dashboard is a single page with a hash-router tab bar across the top, ordered macro → micro: start at Overview, drill into Projects, then Sessions, then single Prompts. Each tab is backed by its own JSON API under `/api/`:
 
 - **Overview** — all-time input/output/cache tokens, sessions, turns, estimated cost on your chosen plan, daily work and cache-read charts, tokens-by-project, token share by model, top tools by call count, and recent sessions. This is the landing tab.
-- **Prompts** — your most expensive user prompts ranked by tokens. Click any row to see the assistant response, tool calls made, and the size of each tool result.
-- **Sessions** — three views (recent, by turns, grouped by project), each session titled by its first prompt. Click a row for the turn-by-turn detail with a deterministic summary header: duration, files edited, top tools, models, and estimated cost.
-- **Projects** — list view for comparison, or a card view (one card per project) with description, cost, a 30-day sparkline, and a click-to-expand detail (model mix, top tools, top files). Descriptions are auto-extracted from each project's `CLAUDE.md`/`README.md` and can be edited inline.
+- **Projects** — list view for comparison, or a card view (one card per project) with description, cost, and a 30-day sparkline. Clicking a card opens a project sum-up popup: daily input/output chart, model mix, top tools/files, and the three most token-expensive sessions (clickable). Descriptions are auto-extracted from each project's `CLAUDE.md`/`README.md` and can be edited inline.
+- **Sessions** — three views (recent, by tokens, grouped by project), each session titled by its first prompt. The session detail groups records by turn (the ⚡ turns ate the most tokens), shows a deterministic summary header — duration, files edited, top tools, models, estimated cost — plus per-session optimization tips and a direct link to that session's prompts.
+- **Prompts** — your most expensive user prompts ranked by tokens, filterable by session. Click a row for the full turn breakdown: what the whole turn cost (all API calls, not just the first response), tool calls made, tool-result sizes, and inline optimization hints.
 - **Skills** — which skills you invoke most often, and (where we can measure them) their token cost. See [limitations](docs/KNOWN_LIMITATIONS.md#skills-token-counts-are-partial).
 - **Tips** — rule-based suggestions for reducing token usage (repeated file reads, oversized tool results, low cache-hit rate, etc.).
 - **Settings** — switch pricing between API / Pro / Max / Max-20x so cost figures everywhere else reflect your actual plan.

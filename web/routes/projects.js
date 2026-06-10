@@ -1,5 +1,5 @@
 import { api, fmt, $ } from '/web/app.js';
-import { donutChart, sparklineChart } from '/web/charts.js';
+import { donutChart, sparklineChart, stackedBarChart } from '/web/charts.js';
 
 const VIEW_KEY = 'td.projects-view';
 
@@ -48,10 +48,10 @@ async function renderList(body) {
 async function renderCards(body) {
   const rows = await api('/api/projects/cards');
   body.innerHTML = `
-    <p class="muted" style="margin:0 0 12px">One card per project — sparkline is billable tokens over the last 30 days. Click a card for models, tools and files. ✎ edits the description.</p>
+    <p class="muted" style="margin:0 0 12px">One card per project — sparkline is billable tokens over the last 30 days. Click a card for the full project sum-up. ✎ edits the description.</p>
     <div class="cards-grid">
       ${rows.map((r, i) => `
-        <div class="card proj-card" data-slug="${fmt.htmlSafe(r.project_slug)}" data-i="${i}">
+        <div class="card proj-card" data-i="${i}">
           <h3 style="margin-bottom:2px" title="${fmt.htmlSafe(r.project_slug)}">
             ${fmt.htmlSafe(r.project_name || r.project_slug)}
             <a class="edit-desc" href="#" data-edit title="Edit description">✎</a>
@@ -63,12 +63,10 @@ async function renderCards(body) {
             <span><b>${fmt.compact(r.billable_tokens)}</b> tokens</span>
           </div>
           <div class="spark" style="height:48px"></div>
-          <div class="detail" style="display:none"></div>
         </div>`).join('')}
     </div>`;
 
-  const cards = Array.from(body.querySelectorAll('.proj-card'));
-  for (const el of cards) {
+  for (const el of body.querySelectorAll('.proj-card')) {
     const r = rows[Number(el.dataset.i)];
     if (r.daily && r.daily.length > 1) {
       sparklineChart(el.querySelector('.spark'), {
@@ -81,7 +79,7 @@ async function renderCards(body) {
     }
     el.addEventListener('click', e => {
       if (e.target.closest('[data-edit]') || e.target.closest('.desc-form')) return;
-      toggleDetail(el, r);
+      openProjectModal(r);
     });
     el.querySelector('[data-edit]').addEventListener('click', e => {
       e.preventDefault();
@@ -91,32 +89,95 @@ async function renderCards(body) {
   }
 }
 
-async function toggleDetail(el, r) {
-  const box = el.querySelector('.detail');
-  if (box.style.display !== 'none') { box.style.display = 'none'; return; }
-  box.style.display = '';
-  if (!box.dataset.loaded) {
-    box.innerHTML = '<span class="muted">loading…</span>';
-    const d = await api('/api/projects/detail?slug=' + encodeURIComponent(r.project_slug));
-    box.innerHTML = `
-      <div class="row cols-2">
-        <div><h3 style="font-size:12px">Models</h3><div class="mini-donut" style="height:150px"></div></div>
-        <div>
-          <h3 style="font-size:12px">Top tools</h3>
-          <ul>${d.top_tools.slice(0, 5).map(t => `<li><span>${fmt.htmlSafe(t.tool_name)}</span><span class="num">${fmt.int(t.calls)}</span></li>`).join('') || '<li class="muted">none</li>'}</ul>
-          <h3 style="font-size:12px;margin-top:12px">Top files</h3>
-          <ul>${d.top_files.slice(0, 5).map(f => `<li><span title="${fmt.htmlSafe(f.file)}">${fmt.htmlSafe(fmt.basename(f.file))}</span><span class="num">${fmt.int(f.calls)}</span></li>`).join('') || '<li class="muted">none</li>'}</ul>
-        </div>
-      </div>`;
-    const donutData = d.models.map(m => ({
-      name: fmt.modelShort(m.model),
-      value: (m.input_tokens || 0) + (m.output_tokens || 0)
-           + (m.cache_create_5m_tokens || 0) + (m.cache_create_1h_tokens || 0),
-    })).filter(x => x.value > 0);
-    if (donutData.length) donutChart(box.querySelector('.mini-donut'), donutData);
-    else box.querySelector('.mini-donut').innerHTML = '<span class="muted" style="font-size:11px">no model data</span>';
-    box.dataset.loaded = '1';
+async function openProjectModal(r) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal wide">
+      <div class="flex">
+        <h2 style="margin:0">${fmt.htmlSafe(r.project_name || r.project_slug)}</h2>
+        <span class="spacer"></span>
+        <button class="close-x" title="Close (Esc)">✕</button>
+      </div>
+      ${r.description ? `<p class="muted" style="margin:6px 0 0">${fmt.htmlSafe(r.description)}</p>` : ''}
+      <div class="kpis">
+        <span class="cost"><b>${fmt.usd(r.cost_usd)}</b> est. cost</span>
+        <span><b>${fmt.int(r.sessions)}</b> sessions</span>
+        <span><b>${fmt.int(r.turns)}</b> turns</span>
+        <span><b>${fmt.compact(r.billable_tokens)}</b> billable</span>
+        <span><b>${fmt.compact(r.cache_read_tokens)}</b> cache reads</span>
+      </div>
+      <div id="pm-body"><p class="muted">loading…</p></div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = e => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', onKey);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  overlay.querySelector('.close-x').addEventListener('click', close);
+
+  const d = await api('/api/projects/detail?slug=' + encodeURIComponent(r.project_slug));
+  const pm = overlay.querySelector('#pm-body');
+  pm.innerHTML = `
+    <div class="row cols-2" style="margin-top:14px">
+      <div>
+        <h3>Daily work (30 days)</h3>
+        <div id="pm-daily" style="height:200px"></div>
+      </div>
+      <div>
+        <h3>Models</h3>
+        <div id="pm-models" style="height:200px"></div>
+      </div>
+    </div>
+    <div class="row cols-2" style="margin-top:14px">
+      <div>
+        <h3>Top tools</h3>
+        <ul class="kv">${d.top_tools.slice(0, 6).map(t => `<li><span>${fmt.htmlSafe(t.tool_name)}</span><span class="num">${fmt.int(t.calls)}</span></li>`).join('') || '<li class="muted">none</li>'}</ul>
+      </div>
+      <div>
+        <h3>Top files</h3>
+        <ul class="kv">${d.top_files.slice(0, 6).map(f => `<li><span title="${fmt.htmlSafe(f.file)}">${fmt.htmlSafe(fmt.basename(f.file))}</span><span class="num">${fmt.int(f.calls)}</span></li>`).join('') || '<li class="muted">none</li>'}</ul>
+      </div>
+    </div>
+    <h3 style="margin-top:16px">Most expensive sessions</h3>
+    <table>
+      <thead><tr><th>started</th><th>first prompt</th><th class="num">turns</th><th class="num">tokens</th></tr></thead>
+      <tbody>
+        ${d.top_sessions.map(s => `
+          <tr class="rowlink" data-sid="${fmt.htmlSafe(s.session_id)}">
+            <td class="mono">${fmt.ts(s.started)}</td>
+            <td class="blur-sensitive">${fmt.htmlSafe(fmt.short(s.first_prompt || '—', 80))}</td>
+            <td class="num">${fmt.int(s.turns)}</td>
+            <td class="num">${fmt.compact(s.tokens)}</td>
+          </tr>`).join('') || '<tr><td colspan="4" class="muted">no sessions</td></tr>'}
+      </tbody>
+    </table>`;
+
+  pm.querySelectorAll('tr.rowlink').forEach(tr => tr.addEventListener('click', () => {
+    close();
+    location.hash = '#/sessions/' + encodeURIComponent(tr.dataset.sid);
+  }));
+
+  if (d.daily && d.daily.length) {
+    stackedBarChart(overlay.querySelector('#pm-daily'), {
+      categories: d.daily.map(x => x.day),
+      series: [
+        { name: 'input',        values: d.daily.map(x => x.input_tokens),        color: '#4A9EFF' },
+        { name: 'output',       values: d.daily.map(x => x.output_tokens),       color: '#7C5CFF' },
+        { name: 'cache create', values: d.daily.map(x => x.cache_create_tokens), color: '#E8A23B' },
+      ],
+    });
+  } else {
+    overlay.querySelector('#pm-daily').innerHTML = '<span class="muted" style="font-size:12px">no activity in the last 30 days</span>';
   }
+  const donutData = d.models.map(m => ({
+    name: fmt.modelShort(m.model),
+    value: (m.input_tokens || 0) + (m.output_tokens || 0)
+         + (m.cache_create_5m_tokens || 0) + (m.cache_create_1h_tokens || 0),
+  })).filter(x => x.value > 0);
+  if (donutData.length) donutChart(overlay.querySelector('#pm-models'), donutData);
+  else overlay.querySelector('#pm-models').innerHTML = '<span class="muted" style="font-size:12px">no model data</span>';
 }
 
 function editDescription(el, r) {

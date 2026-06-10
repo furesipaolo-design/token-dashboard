@@ -113,3 +113,153 @@ def session_overview(db_path, session_id: str) -> dict:
         "files_edited": files_edited,
         "top_tools": top_tools,
     }
+
+
+def session_tips(db_path, session_id: str) -> list:
+    """Per-session optimization hints. Same spirit as tips.py but scoped to one
+    session and ephemeral (no dismissal — they describe what already happened)."""
+    out = []
+    with connect(db_path) as c:
+        rereads = [dict(r) for r in c.execute(
+            """
+            SELECT target, COUNT(*) AS n FROM tool_calls
+             WHERE session_id = ? AND tool_name = 'Read'
+               AND target IS NOT NULL AND target != ''
+             GROUP BY target HAVING n >= 4 ORDER BY n DESC LIMIT 3
+            """,
+            (session_id,),
+        )]
+        big = c.execute(
+            """
+            SELECT COUNT(*) AS n, MAX(result_tokens) AS mx
+              FROM tool_calls
+             WHERE session_id = ? AND tool_name = '_tool_result'
+               AND result_tokens >= 20000
+            """,
+            (session_id,),
+        ).fetchone()
+        usage = c.execute(
+            """
+            SELECT SUM(CASE WHEN type='user' THEN 1 ELSE 0 END) AS turns,
+                   COALESCE(SUM(CASE WHEN type='assistant' THEN cache_read_tokens END),0) AS cr,
+                   COALESCE(SUM(CASE WHEN type='assistant' THEN
+                     input_tokens + cache_create_5m_tokens + cache_create_1h_tokens END),0) AS rebuild
+              FROM messages WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+
+    if rereads:
+        worst = rereads[0]
+        out.append({
+            "key": "rereads",
+            "title": f"{worst['target'].rsplit('/', 1)[-1]} was read {worst['n']} times",
+            "body": "Re-reading the same file rebuilds input tokens every time. Ask Claude to take notes "
+                    "in the conversation (or summarize the file once) instead of re-opening it.",
+        })
+    if big and (big["n"] or 0) >= 1:
+        out.append({
+            "key": "big-results",
+            "title": f"{big['n']} tool result(s) over 20k tokens (max {int(big['mx']):,})",
+            "body": "Huge tool outputs dominate input cost. Prefer Grep over full-file Reads, "
+                    "pipe long Bash output through head/tail, and ask for narrower reads.",
+        })
+    total_ctx = (usage["cr"] or 0) + (usage["rebuild"] or 0)
+    if (usage["turns"] or 0) >= 5 and total_ctx > 100_000:
+        hit = (usage["cr"] or 0) / total_ctx
+        if hit < 0.40:
+            out.append({
+                "key": "cache-miss",
+                "title": f"Low cache hit rate ({hit * 100:.0f}%)",
+                "body": "The prompt cache expires after ~5 minutes of inactivity. Long pauses between "
+                        "turns (or restarting context) force a full rebuild — batch related questions "
+                        "while the session is warm.",
+            })
+    if (usage["turns"] or 0) > 40:
+        out.append({
+            "key": "marathon",
+            "title": f"{usage['turns']} turns in one session",
+            "body": "Long sessions drag the whole history into every turn. Splitting unrelated tasks "
+                    "into separate sessions (or /clear between tasks) keeps input tokens down.",
+        })
+    return out
+
+
+def turn_detail(db_path, session_id: str, prompt_id: str) -> dict:
+    """Everything we know about one prompt's full turn: per-model usage, tool
+    calls, and tool-result sizes.
+
+    promptId only exists on user records in the transcripts — assistant rows
+    never carry it — so the turn is reconstructed as the time window from this
+    prompt to the session's next user prompt (sidechain work included).
+    """
+    empty = {
+        "session_id": session_id, "prompt_id": prompt_id, "models": [],
+        "tool_calls": [], "result_tokens_total": 0, "result_tokens_max": 0,
+        "result_count": 0,
+    }
+    with connect(db_path) as c:
+        anchor = c.execute(
+            "SELECT MIN(timestamp) AS t0 FROM messages WHERE session_id = ? AND prompt_id = ?",
+            (session_id, prompt_id),
+        ).fetchone()
+        if not anchor or not anchor["t0"]:
+            return empty
+        t0 = anchor["t0"]
+        nxt = c.execute(
+            """
+            SELECT MIN(timestamp) AS t1 FROM messages
+             WHERE session_id = ? AND type = 'user' AND prompt_id IS NOT NULL
+               AND prompt_id != ? AND timestamp > ?
+            """,
+            (session_id, prompt_id, t0),
+        ).fetchone()
+        t1 = (nxt and nxt["t1"]) or "9999"
+
+        models = [dict(r) for r in c.execute(
+            """
+            SELECT COALESCE(model,'unknown') AS model, COUNT(*) AS turns,
+                   COALESCE(SUM(input_tokens),0)            AS input_tokens,
+                   COALESCE(SUM(output_tokens),0)           AS output_tokens,
+                   COALESCE(SUM(cache_read_tokens),0)       AS cache_read_tokens,
+                   COALESCE(SUM(cache_create_5m_tokens),0)  AS cache_create_5m_tokens,
+                   COALESCE(SUM(cache_create_1h_tokens),0)  AS cache_create_1h_tokens
+              FROM messages
+             WHERE session_id = ? AND type = 'assistant'
+               AND timestamp >= ? AND timestamp < ?
+               AND COALESCE(model,'') != '<synthetic>'
+             GROUP BY model
+            """,
+            (session_id, t0, t1),
+        )]
+        tool_calls = [dict(r) for r in c.execute(
+            """
+            SELECT tool_name, target, COUNT(*) AS calls
+              FROM tool_calls
+             WHERE session_id = ? AND timestamp >= ? AND timestamp < ?
+               AND tool_name != '_tool_result'
+             GROUP BY tool_name, target
+             ORDER BY calls DESC, tool_name
+             LIMIT 20
+            """,
+            (session_id, t0, t1),
+        )]
+        results = c.execute(
+            """
+            SELECT COUNT(*) AS n,
+                   COALESCE(SUM(result_tokens),0) AS total,
+                   COALESCE(MAX(result_tokens),0) AS max
+              FROM tool_calls
+             WHERE session_id = ? AND timestamp >= ? AND timestamp < ?
+               AND tool_name = '_tool_result'
+            """,
+            (session_id, t0, t1),
+        ).fetchone()
+    return {
+        **empty,
+        "models": models,
+        "tool_calls": tool_calls,
+        "result_tokens_total": results["total"],
+        "result_tokens_max": results["max"],
+        "result_count": results["n"],
+    }

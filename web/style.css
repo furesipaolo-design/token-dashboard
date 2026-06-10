@@ -245,6 +245,56 @@ tr.rowlink:hover td { background: var(--panel-2); }
 .session-facts b { color: var(--text); font-weight: 500; }
 .session-title { font-size: 14px; color: var(--text); margin: 8px 0 0; line-height: 1.45; }
 
+/* back button (session detail) */
+.btn-back {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--panel-2); border: 1px solid var(--border-2);
+  border-radius: 6px; padding: 6px 12px; margin-bottom: 12px;
+  color: var(--text); font-size: 12px; font-weight: 500;
+}
+.btn-back:hover { border-color: var(--accent); text-decoration: none; }
+
+/* collapsible turns in session detail */
+.turn { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; overflow: hidden; }
+.turn > summary {
+  cursor: pointer; list-style: none; padding: 10px 12px;
+  display: flex; align-items: baseline; gap: 10px;
+  background: var(--panel-2); flex-wrap: wrap;
+}
+.turn > summary::-webkit-details-marker { display: none; }
+.turn > summary::before { content: "▸"; color: var(--muted); font-size: 11px; flex: 0 0 auto; }
+.turn[open] > summary::before { content: "▾"; }
+.turn > summary .prompt { flex: 1 1 300px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.turn > summary .tok { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
+.turn.hot { border-color: rgba(232,162,59,0.5); }
+.turn.hot > summary .tok { color: var(--warn); }
+.turn table { font-size: 12px; }
+
+/* session tips strip */
+.tips-strip { display: grid; gap: 8px; margin-top: 12px; }
+.tips-strip .tip { margin: 0; }
+
+/* wide modal (project popup) */
+.modal.wide { max-width: 880px; width: calc(100vw - 64px); max-height: calc(100vh - 64px); overflow-y: auto; }
+.modal .close-x {
+  background: transparent; border: 0; color: var(--muted);
+  font-size: 18px; line-height: 1; cursor: pointer; padding: 4px 8px;
+}
+.modal .close-x:hover { color: var(--text); }
+.modal .kpis {
+  display: flex; gap: 16px; flex-wrap: wrap; margin: 10px 0 4px;
+  font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums;
+}
+.modal .kpis b { color: var(--text); font-weight: 500; }
+.modal .kpis .cost { color: var(--good); }
+.modal ul.kv { margin: 6px 0 0; padding: 0; list-style: none; }
+.modal ul.kv li {
+  display: flex; justify-content: space-between; gap: 10px;
+  font-size: 12px; padding: 2px 0; color: var(--muted);
+}
+.modal ul.kv li span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.modal ul.kv li .num { font-family: var(--mono); color: var(--text); }
+
 /* first-run modal */
 .modal-overlay {
   position: fixed; inset: 0; background: rgba(10,14,20,0.85);

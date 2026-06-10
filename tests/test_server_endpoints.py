@@ -102,6 +102,31 @@ class EndpointTests(unittest.TestCase):
         self.assertIn("pricing_mtime", plan)
         self.assertRegex(plan["pricing_mtime"], r"^\d{4}-\d{2}-\d{2}T")
 
+    def test_projects_detail_includes_daily_and_top_sessions(self):
+        d = self._get("/api/projects/detail?slug=p")
+        self.assertIn("daily", d)
+        self.assertEqual(d["top_sessions"][0]["session_id"], "s1")
+        self.assertEqual(d["top_sessions"][0]["first_prompt"], "fix login")
+
+    def test_sessions_project_filter(self):
+        rows = self._get("/api/sessions?project=p")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(self._get("/api/sessions?project=nope"), [])
+
+    def test_prompts_session_filter(self):
+        rows = self._get("/api/prompts?session=s1")
+        self.assertEqual({r["session_id"] for r in rows}, {"s1"})
+        self.assertEqual(self._get("/api/prompts?session=nope"), [])
+
+    def test_prompts_turn_endpoint(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self._get("/api/prompts/turn?session=s1")
+        self.assertEqual(ctx.exception.code, 400)
+
+    def test_session_meta_includes_tips(self):
+        ov = self._get("/api/sessions/s1/meta")
+        self.assertIsInstance(ov["tips"], list)
+
 
 class WatchTickTests(unittest.TestCase):
     def test_tick_scans_and_notifies(self):

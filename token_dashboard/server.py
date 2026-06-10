@@ -19,7 +19,7 @@ from .db import (
     tool_token_breakdown, recent_sessions, session_turns,
     daily_token_breakdown, model_breakdown, skill_breakdown,
 )
-from .insights import project_files, session_overview
+from .insights import project_files, session_overview, session_tips, turn_detail
 from .meta import descriptions, set_description
 from .pricing import load_pricing, cost_for, get_plan, set_plan
 from .tips import all_tips, dismiss_tip
@@ -155,7 +155,8 @@ def build_handler(db_path: str, projects_dir: str):
             if path == "/api/prompts":
                 limit = _clamp_limit(qs.get("limit", ["50"])[0], 50)
                 sort = qs.get("sort", ["tokens"])[0]
-                rows = expensive_prompts(db_path, limit=limit, sort=sort)
+                rows = expensive_prompts(db_path, limit=limit, sort=sort,
+                                         session_id=qs.get("session", [None])[0])
                 for r in rows:
                     c = cost_for(r["model"], {
                         "input_tokens": 0, "output_tokens": 0,
@@ -164,6 +165,14 @@ def build_handler(db_path: str, projects_dir: str):
                     }, pricing)
                     r["estimated_cost_usd"] = c["usd"]
                 return _send_json(self, rows)
+            if path == "/api/prompts/turn":
+                sid = qs.get("session", [""])[0]
+                pid = qs.get("prompt", [""])[0]
+                if not sid or not pid:
+                    return _send_error(self, 400, "missing session or prompt")
+                d = turn_detail(db_path, sid, pid)
+                d["cost_usd"] = _apply_costs(d["models"], pricing)
+                return _send_json(self, d)
             if path == "/api/projects":
                 return _send_json(self, project_summary(db_path, since, until))
             if path == "/api/projects/cards":
@@ -189,12 +198,15 @@ def build_handler(db_path: str, projects_dir: str):
                     return _send_error(self, 400, "missing slug")
                 models = model_breakdown(db_path, since, until, project_slug=slug)
                 cost = _apply_costs(models, pricing)
+                spark_since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
                 return _send_json(self, {
                     "project_slug": slug,
                     "cost_usd": cost,
                     "models": models,
                     "top_tools": tool_token_breakdown(db_path, since, until, project_slug=slug)[:8],
                     "top_files": project_files(db_path, slug, limit=8),
+                    "daily": daily_token_breakdown(db_path, spark_since, None, project_slug=slug),
+                    "top_sessions": recent_sessions(db_path, limit=3, sort="tokens", project_slug=slug),
                 })
             if path == "/api/tools":
                 return _send_json(self, tool_token_breakdown(db_path, since, until))
@@ -203,6 +215,7 @@ def build_handler(db_path: str, projects_dir: str):
                     db_path, limit=_clamp_limit(qs.get("limit", ["20"])[0], 20),
                     since=since, until=until,
                     sort=qs.get("sort", ["recent"])[0],
+                    project_slug=qs.get("project", [None])[0],
                 ))
             if path == "/api/daily":
                 return _send_json(self, daily_token_breakdown(db_path, since, until))
@@ -223,9 +236,11 @@ def build_handler(db_path: str, projects_dir: str):
             if path.startswith("/api/sessions/"):
                 rest = path[len("/api/sessions/"):]
                 if rest.endswith("/meta"):
-                    ov = session_overview(db_path, rest[: -len("/meta")])
+                    sid = rest[: -len("/meta")]
+                    ov = session_overview(db_path, sid)
                     if ov.get("models") is not None:
                         ov["cost_usd"] = _apply_costs(ov["models"], pricing)
+                        ov["tips"] = session_tips(db_path, sid)
                     return _send_json(self, ov)
                 return _send_json(self, session_turns(db_path, rest))
             if path == "/api/tips":
