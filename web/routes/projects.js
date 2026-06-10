@@ -83,7 +83,7 @@ function wireProjectRows(scope, rows) {
 
 function renderCards(body, rows) {
   body.insertAdjacentHTML('beforeend', `
-    <p class="muted" style="margin:0 0 12px">One card per project — sparkline is billable tokens over the last 30 days. Click a card for the full project sum-up. ✎ edits the description, ⤓ archives.</p>
+    <p class="muted" style="margin:0 0 12px">One card per project — sparkline is billable tokens over the last 30 days. Click a card for the full project sum-up. ✎ edits the description, ▤ archives.</p>
     <div class="cards-grid">
       ${rows.map((r, i) => `
         <div class="card proj-card" data-i="${i}">
@@ -91,7 +91,7 @@ function renderCards(body, rows) {
             ${fmt.htmlSafe(r.project_name || r.project_slug)}
             <span class="card-icons">
               <a class="edit-desc" href="#" data-edit title="Edit description">✎</a>
-              <a class="archive-btn" href="#" data-archive-card title="Archive this project">⤓</a>
+              <a class="archive-btn" href="#" data-archive-card title="Archive this project">▤</a>
             </span>
           </h3>
           <div class="desc" data-desc>${r.description ? fmt.htmlSafe(r.description) : '<span class="muted">no description — ✎ to add one</span>'}</div>
@@ -170,7 +170,7 @@ async function openProjectModal(r) {
         <a class="edit-desc" href="#" data-edit title="Edit description">✎</a>
         <span class="spacer"></span>
         <button data-archive-modal title="${r.archived ? 'Restore to the main list' : 'Move to the archived list'}">
-          ${r.archived ? '↩ Restore' : '⤓ Archive'}
+          ${r.archived ? '↩ Restore' : '▤ Archive'}
         </button>
         <button class="close-x" title="Close (Esc)">✕</button>
       </div>
