@@ -70,6 +70,20 @@ class RightSizeTests(unittest.TestCase):
         tips = right_size_tips(self.db, today_iso="2026-04-19T00:00:00")
         self.assertTrue(any(t["category"] == "right-size" for t in tips))
 
+    def test_dollar_figures_include_cache_at_cache_rates(self):
+        # 10 calls × (1M cache_create_5m + 2M cache_read), zero plain input.
+        # Opus: 10 × (1.0×$6.25 + 2.0×$0.50) = $72.50 (+ tiny output)
+        # The old math priced cache_create at the input rate and ignored
+        # cache_read entirely → $50.00.
+        with connect(self.db) as c:
+            for i in range(10):
+                c.execute("INSERT INTO messages (uuid, session_id, project_slug, type, timestamp, model, input_tokens, output_tokens, cache_read_tokens, cache_create_5m_tokens, cache_create_1h_tokens, is_sidechain) VALUES (?, 's','p','assistant','2026-04-18T00:00:00Z','claude-opus-4-7', 0, 100, 2000000, 1000000, 0, 0)", (f"a{i}",))
+            c.commit()
+        tips = right_size_tips(self.db, today_iso="2026-04-19T00:00:00")
+        self.assertEqual(len(tips), 1)
+        opus_cost = 10 * (1.0 * 6.25 + 2.0 * 0.50) + 10 * 100 * 25.0 / 1_000_000
+        self.assertIn(f"${opus_cost:.2f}", tips[0]["body"])
+
 
 class OutlierTests(unittest.TestCase):
     def setUp(self):
@@ -85,6 +99,21 @@ class OutlierTests(unittest.TestCase):
             c.commit()
         tips = outlier_tips(self.db, today_iso="2026-04-19T00:00:00")
         self.assertTrue(any(t["category"] == "tool-bloat" for t in tips))
+
+    def test_subagent_outlier_compares_whole_runs(self):
+        # 5 runs (distinct agent_ids): four small, one 10× — must fire.
+        # agent_id is unique per run, so the comparison is across runs.
+        with connect(self.db) as c:
+            for run in range(4):
+                for i in range(3):
+                    c.execute("INSERT INTO messages (uuid, session_id, project_slug, type, timestamp, model, input_tokens, output_tokens, is_sidechain, agent_id) VALUES (?, 's','p','assistant','2026-04-18T00:00:00Z','claude-sonnet-4-6', 1000, 4000, 1, ?)", (f"r{run}-{i}", f"agent-{run}"))
+            for i in range(3):
+                c.execute("INSERT INTO messages (uuid, session_id, project_slug, type, timestamp, model, input_tokens, output_tokens, is_sidechain, agent_id) VALUES (?, 's','p','assistant','2026-04-18T00:00:00Z','claude-sonnet-4-6', 10000, 90000, 1, 'agent-big')", (f"rb-{i}",))
+            c.commit()
+        tips = outlier_tips(self.db, today_iso="2026-04-19T00:00:00")
+        sub = [t for t in tips if t["category"] == "subagent-outlier"]
+        self.assertEqual(len(sub), 1)
+        self.assertIn("300,000", sub[0]["body"])
 
 
 class DismissTests(unittest.TestCase):

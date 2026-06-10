@@ -1,7 +1,7 @@
 """Per-project and per-session drill-down queries (cards detail, session header)."""
 from __future__ import annotations
 
-from .db import best_project_name, connect
+from .db import best_project_name, connect, real_prompt_sql
 
 FILE_TOOLS = ("Read", "Edit", "Write", "NotebookEdit")
 EDIT_TOOLS = ("Edit", "Write", "NotebookEdit")
@@ -27,10 +27,10 @@ def session_overview(db_path, session_id: str) -> dict:
     """Deterministic session summary: title (first prompt) + facts from the DB."""
     with connect(db_path) as c:
         head = c.execute(
-            """
+            f"""
             SELECT MIN(timestamp) AS started, MAX(timestamp) AS ended,
                    COUNT(*) AS records,
-                   SUM(CASE WHEN type='user' THEN 1 ELSE 0 END) AS turns,
+                   SUM(CASE WHEN {real_prompt_sql()} THEN 1 ELSE 0 END) AS turns,
                    COALESCE(SUM(input_tokens),0)            AS input_tokens,
                    COALESCE(SUM(output_tokens),0)           AS output_tokens,
                    COALESCE(SUM(cache_read_tokens),0)       AS cache_read_tokens,
@@ -42,14 +42,13 @@ def session_overview(db_path, session_id: str) -> dict:
         if not head or head["records"] == 0:
             return {"session_id": session_id, "records": 0}
 
-        # NOT LIKE '<%' skips harness-injected user records
-        # (<local-command-caveat>, <ide_opened_file>, <system-reminder>, …)
+        # real_prompt_sql also skips sidechain records: without it a
+        # subagent's injected prompt (or a compaction preamble) can win the
+        # ORDER BY and become the session title.
         first = c.execute(
-            """
+            f"""
             SELECT prompt_text FROM messages
-             WHERE session_id = ? AND type = 'user'
-               AND prompt_text IS NOT NULL AND prompt_text != ''
-               AND prompt_text NOT LIKE '<%'
+             WHERE session_id = ? AND {real_prompt_sql()}
              ORDER BY timestamp ASC LIMIT 1
             """,
             (session_id,),
@@ -138,11 +137,15 @@ def session_tips(db_path, session_id: str) -> list:
             """,
             (session_id,),
         ).fetchone()
+        # Cache sums are main-chain only: subagents and auto-compact runs
+        # start cold by design, and their rebuild isn't a habit the user can
+        # change — blaming it on "context resets" would be misleading.
         usage = c.execute(
-            """
-            SELECT SUM(CASE WHEN type='user' THEN 1 ELSE 0 END) AS turns,
-                   COALESCE(SUM(CASE WHEN type='assistant' THEN cache_read_tokens END),0) AS cr,
-                   COALESCE(SUM(CASE WHEN type='assistant' THEN
+            f"""
+            SELECT SUM(CASE WHEN {real_prompt_sql()} THEN 1 ELSE 0 END) AS turns,
+                   COALESCE(SUM(CASE WHEN type='assistant' AND is_sidechain=0
+                     THEN cache_read_tokens END),0) AS cr,
+                   COALESCE(SUM(CASE WHEN type='assistant' AND is_sidechain=0 THEN
                      input_tokens + cache_create_5m_tokens + cache_create_1h_tokens END),0) AS rebuild
               FROM messages WHERE session_id = ?
             """,
@@ -191,7 +194,11 @@ def turn_detail(db_path, session_id: str, prompt_id: str) -> dict:
 
     promptId only exists on user records in the transcripts — assistant rows
     never carry it — so the turn is reconstructed as the time window from this
-    prompt to the session's next user prompt (sidechain work included).
+    prompt to the session's next *typed* prompt (sidechain work included).
+    The window must close only on main-chain text prompts: sidechain user
+    records carry their own promptIds (a subagent's injected prompt would
+    close the window the moment the Task was dispatched), and tool results
+    from a queued concurrent prompt can carry a different promptId mid-turn.
     """
     empty = {
         "session_id": session_id, "prompt_id": prompt_id, "models": [],
@@ -209,7 +216,8 @@ def turn_detail(db_path, session_id: str, prompt_id: str) -> dict:
         nxt = c.execute(
             """
             SELECT MIN(timestamp) AS t1 FROM messages
-             WHERE session_id = ? AND type = 'user' AND prompt_id IS NOT NULL
+             WHERE session_id = ? AND type = 'user' AND is_sidechain = 0
+               AND prompt_text IS NOT NULL AND prompt_id IS NOT NULL
                AND prompt_id != ? AND timestamp > ?
             """,
             (session_id, prompt_id, t0),

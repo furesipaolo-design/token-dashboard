@@ -136,6 +136,39 @@ class EndpointTests(unittest.TestCase):
         self.assertFalse(out["archived"])
         self.assertFalse(self._get("/api/projects/cards")[0]["archived"])
 
+    def test_static_traversal_to_webroot_sibling_is_rejected(self):
+        # `<repo>/web-probe.txt` shares the string prefix of `<repo>/web` —
+        # a startswith check without the trailing separator serves it.
+        import token_dashboard.server as srv
+        probe = srv.WEB_ROOT.parent / "web-probe-AUDIT.txt"
+        probe.write_text("SECRET")
+        self.addCleanup(probe.unlink)
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self._get("/web/../web-probe-AUDIT.txt")
+        self.assertEqual(ctx.exception.code, 404)
+
+    def test_static_legit_file_still_served(self):
+        body = urllib.request.urlopen(
+            f"http://127.0.0.1:{self.port}/web/app.js").read()
+        self.assertIn(b"render", body)
+
+    def test_query_error_returns_500_not_dropped_connection(self):
+        # Nuke the DB: the next query hits "no such table" — the client must
+        # get a clean HTTP 500 JSON error, not a dropped connection.
+        os.remove(self.db)
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self._get("/api/overview")
+        self.assertEqual(ctx.exception.code, 500)
+        self.assertIn("error", json.loads(ctx.exception.read()))
+
+    def test_head_on_stream_and_scan_rejected(self):
+        for path in ("/api/stream", "/api/scan"):
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}{path}", method="HEAD")
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(req, timeout=5)
+            self.assertEqual(ctx.exception.code, 405)
+
     def test_archive_validates_input(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             self._post("/api/projects/archive", {"archived": True})

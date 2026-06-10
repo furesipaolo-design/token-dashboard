@@ -3,7 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from token_dashboard.db import init_db, project_root_path
+from token_dashboard.db import _encode_slug, init_db, project_root_path
 from token_dashboard.meta import (
     MAX_DESCRIPTION_CHARS, auto_description, descriptions,
     extract_description, set_description,
@@ -34,6 +34,18 @@ class ExtractTests(unittest.TestCase):
 
     def test_empty_doc_returns_none(self):
         self.assertIsNone(extract_description("# Only a heading\n\n## And another\n"))
+
+    def test_yaml_frontmatter_keys_are_not_the_description(self):
+        doc = "---\ntitle: Foo\nlayout: home\n---\n\n# Project\n\nReal description here."
+        self.assertEqual(extract_description(doc), "Real description here.")
+
+    def test_setext_heading_is_not_the_description(self):
+        doc = "My Project\n==========\n\nThe actual intro paragraph."
+        self.assertEqual(extract_description(doc), "The actual intro paragraph.")
+
+    def test_unterminated_frontmatter_is_treated_as_content(self):
+        # no closing fence → not frontmatter; the key line is just text
+        self.assertEqual(extract_description("---\ntitle: Foo\n"), "title: Foo")
 
 
 class AutoDescriptionTests(unittest.TestCase):
@@ -77,7 +89,9 @@ class OverrideTests(unittest.TestCase):
         os.makedirs(self.proj_dir)
         with open(os.path.join(self.proj_dir, "README.md"), "w") as f:
             f.write("Auto text.\n")
-        self.slug = self.proj_dir.replace("/", "-").replace(" ", "-")
+        # use the real encoder: mkdtemp() suffixes may contain `_`, which
+        # encodes to `-` — a hand-rolled replace() made this test flaky
+        self.slug = _encode_slug(self.proj_dir)
         with sqlite3.connect(self.db) as c:
             c.execute(
                 "INSERT INTO messages (uuid, session_id, project_slug, cwd, type, timestamp) VALUES ('u1','s1',?,?,'user','2026-06-01T00:00:00Z')",

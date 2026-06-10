@@ -30,8 +30,8 @@ INSERT OR REPLACE INTO messages (
 """
 
 INSERT_TOOL = """
-INSERT INTO tool_calls (message_uuid, session_id, project_slug, tool_name, target, result_tokens, is_error, timestamp)
-VALUES (:message_uuid, :session_id, :project_slug, :tool_name, :target, :result_tokens, :is_error, :timestamp)
+INSERT OR IGNORE INTO tool_calls (message_uuid, session_id, project_slug, tool_name, target, result_tokens, is_error, timestamp, tool_use_id)
+VALUES (:message_uuid, :session_id, :project_slug, :tool_name, :target, :result_tokens, :is_error, :timestamp, :tool_use_id)
 """
 
 
@@ -99,6 +99,7 @@ def _extract_tools(rec: dict) -> List[dict]:
             "result_tokens": None,
             "is_error":      0,
             "timestamp":     rec.get("timestamp"),
+            "tool_use_id":   block.get("id"),
         })
     return out
 
@@ -124,6 +125,7 @@ def _extract_results(rec: dict) -> List[dict]:
             "result_tokens": chars // 4,
             "is_error":      1 if block.get("is_error") else 0,
             "timestamp":     rec.get("timestamp"),
+            "tool_use_id":   block.get("tool_use_id"),
         })
     return out
 
@@ -172,22 +174,42 @@ def _project_slug(file_path: Path, projects_root: Path) -> str:
     return rel.parts[0]
 
 
-def _evict_prior_snapshots(conn, session_id: str, message_id: str, keep_uuid: str) -> None:
-    """Remove older streaming snapshots for the same (session_id, message_id).
+def _evict_prior_snapshots(conn, session_id: str, message_id: str,
+                           keep_uuid: str, keep_parent: Optional[str]) -> Optional[str]:
+    """Remove older lines of the same (session_id, message_id) response.
 
-    Claude Code writes 2–3 JSONL lines per assistant response (partial → final)
-    with identical message.id but distinct top-level uuids. Only the final
-    tally matches billing, so earlier snapshots must be replaced, not summed.
+    Claude Code writes one JSONL line per content block (and occasionally
+    re-flushed streaming snapshots) with identical message.id, distinct
+    top-level uuids, and identical usage — so only one line may survive or
+    tokens would be summed N times.
+
+    Two things must outlive the evicted lines:
+    - the parent chain: each line's parentUuid points at the *previous line*
+      of the same group, not at the user prompt. The survivor adopts the
+      group's external parent (the one parent_uuid that is not itself in the
+      group) so the prompt→first-response join keeps working. Returns the
+      parent_uuid the caller should store on the surviving row.
+    - tool rows: each line carries its own tool_use blocks; deleting rows
+      with their line erased ~20% of tool analytics. Rows stay attached to
+      their (now evicted) message_uuid — every tool_calls query filters by
+      session/project, none joins back to messages — and the unique
+      (session_id, tool_use_id, tool_name) index dedups snapshot re-flushes.
     """
-    old = [r[0] for r in conn.execute(
-        "SELECT uuid FROM messages WHERE session_id=? AND message_id=? AND uuid!=?",
+    old = conn.execute(
+        "SELECT uuid, parent_uuid FROM messages WHERE session_id=? AND message_id=? AND uuid!=?",
         (session_id, message_id, keep_uuid),
-    )]
+    ).fetchall()
     if not old:
-        return
-    placeholders = ",".join("?" * len(old))
-    conn.execute(f"DELETE FROM tool_calls WHERE message_uuid IN ({placeholders})", old)
-    conn.execute(f"DELETE FROM messages WHERE uuid IN ({placeholders})", old)
+        return keep_parent
+    old_uuids = {r["uuid"] for r in old}
+    if keep_parent in old_uuids:
+        keep_parent = next(
+            (r["parent_uuid"] for r in old if r["parent_uuid"] not in old_uuids),
+            keep_parent,
+        )
+    placeholders = ",".join("?" * len(old_uuids))
+    conn.execute(f"DELETE FROM messages WHERE uuid IN ({placeholders})", list(old_uuids))
+    return keep_parent
 
 
 def scan_file(path: Path, project_slug: str, conn, start_byte: int = 0) -> dict:
@@ -229,20 +251,27 @@ def scan_file(path: Path, project_slug: str, conn, start_byte: int = 0) -> dict:
             if not isinstance(rec, dict) or "uuid" not in rec or "type" not in rec:
                 end_offset = line_end
                 continue
-            msg, tlist = parse_record(rec, project_slug)
+            try:
+                msg, tlist = parse_record(rec, project_slug)
+            except Exception:
+                # JSON-valid but shape-violating record (e.g. message is a
+                # string, usage value non-numeric). One bad line must not
+                # poison the whole scan pass.
+                end_offset = line_end
+                continue
             if not msg["session_id"] or not msg["timestamp"]:
                 end_offset = line_end
                 continue
             if msg["message_id"]:
-                _evict_prior_snapshots(conn, msg["session_id"], msg["message_id"], msg["uuid"])
+                msg["parent_uuid"] = _evict_prior_snapshots(
+                    conn, msg["session_id"], msg["message_id"], msg["uuid"], msg["parent_uuid"])
             conn.execute(INSERT_MSG, msg)
-            # tool_calls has no natural unique key; clear any prior rows for
-            # this uuid so full rescans stay idempotent instead of
-            # duplicating rows.
+            # Clear this uuid's own prior rows so full rescans stay
+            # idempotent for rows without a tool_use_id; rows with one are
+            # deduped by the unique index + INSERT OR IGNORE.
             conn.execute("DELETE FROM tool_calls WHERE message_uuid=?", (msg["uuid"],))
             for t in tlist:
-                conn.execute(INSERT_TOOL, t)
-                tools += 1
+                tools += conn.execute(INSERT_TOOL, t).rowcount
             msgs += 1
             end_offset = line_end
     return {"messages": msgs, "tools": tools, "end_offset": end_offset}
@@ -273,7 +302,13 @@ def _scan_dir_locked(projects_root: Union[str, Path], db_path: Union[str, Path])
             if row and stat.st_size > row["bytes_read"]:
                 offset = row["bytes_read"]
             slug = _project_slug(p, root)
-            sub = scan_file(p, slug, conn, start_byte=offset)
+            try:
+                sub = scan_file(p, slug, conn, start_byte=offset)
+            except OSError:
+                # File vanished or turned unreadable mid-scan; roll back its
+                # partial rows and move on — the next pass retries it.
+                conn.rollback()
+                continue
             # Persist the byte offset of the last fully-parsed line (not
             # st_size) so a partial line mid-flush is retried on the next
             # scan instead of being skipped over.
@@ -281,8 +316,11 @@ def _scan_dir_locked(projects_root: Union[str, Path], db_path: Union[str, Path])
                 "INSERT OR REPLACE INTO files (path, mtime, bytes_read, scanned_at) VALUES (?, ?, ?, ?)",
                 (str(p), stat.st_mtime, sub["end_offset"], time.time()),
             )
+            # Commit per file: a first scan of a large history would
+            # otherwise hold the write lock for the whole pass, stalling
+            # API reads/writes, and one bad file would roll back everything.
+            conn.commit()
             totals["messages"] += sub["messages"]
             totals["tools"]    += sub["tools"]
             totals["files"]    += 1
-        conn.commit()
     return totals

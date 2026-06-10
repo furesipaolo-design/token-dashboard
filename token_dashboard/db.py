@@ -57,11 +57,18 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   target        TEXT,
   result_tokens INTEGER,
   is_error      INTEGER NOT NULL DEFAULT 0,
-  timestamp     TEXT    NOT NULL
+  timestamp     TEXT    NOT NULL,
+  tool_use_id   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tools_session ON tool_calls(session_id);
 CREATE INDEX IF NOT EXISTS idx_tools_name    ON tool_calls(tool_name);
 CREATE INDEX IF NOT EXISTS idx_tools_target  ON tool_calls(target);
+-- Exact dedup for tool rows repeated across streaming-snapshot lines of the
+-- same response. tool_name is part of the key because a tool_use block and
+-- its _tool_result row share the same tool_use_id; session_id because
+-- resumed/forked sessions copy blocks (ids included) into a new session.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tools_dedup
+  ON tool_calls(session_id, tool_use_id, tool_name) WHERE tool_use_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS plan (
   k TEXT PRIMARY KEY,
@@ -99,6 +106,7 @@ def init_db(path: Union[str, Path]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as c:
         _migrate_add_message_id(c)
+        _migrate_add_tool_use_id(c)
         c.executescript(SCHEMA)
 
 
@@ -125,11 +133,38 @@ def _migrate_add_message_id(conn) -> None:
     conn.commit()
 
 
+def _migrate_add_tool_use_id(conn) -> None:
+    """Add tool_calls.tool_use_id for exact tool-row dedup.
+
+    Why: transcripts write one JSONL line per content block; the snapshot
+    eviction used to DELETE tool rows attached to superseded lines, erasing
+    ~20% of tool_use rows (and the survivor's parent_uuid pointed at an
+    evicted sibling, orphaning the prompt→response join). Source of truth is
+    on disk; clearing forces a clean replay with the fixed scanner.
+    """
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tool_calls'"
+    ).fetchone()
+    if not has_table:
+        return
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(tool_calls)")}
+    if "tool_use_id" in cols:
+        return
+    conn.execute("ALTER TABLE tool_calls ADD COLUMN tool_use_id TEXT")
+    conn.execute("DELETE FROM messages")
+    conn.execute("DELETE FROM tool_calls")
+    conn.execute("DELETE FROM files")
+    conn.commit()
+
+
 @contextmanager
 def connect(path: Union[str, Path]):
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # Scans hold a write transaction while APIs read/write concurrently;
+    # wait out the lock instead of failing with "database is locked".
+    conn.execute("PRAGMA busy_timeout = 10000")
     try:
         yield conn
     finally:
@@ -143,6 +178,20 @@ def _range_clause(since, until, col: str = "timestamp"):
     if until:
         where.append(f"{col} < ?"); args.append(until)
     return ((" AND " + " AND ".join(where)) if where else "", args)
+
+
+def real_prompt_sql(prefix: str = "") -> str:
+    """SQL predicate for a prompt the human actually typed.
+
+    Tool results and subagent-injected prompts also arrive as type='user'
+    records, and harness-injected ones (<local-command-caveat>,
+    <system-reminder>, …) start with '<'. Counting raw user records inflates
+    "turns" by roughly an order of magnitude. `prefix` is an internal table
+    alias like "u." — never user input.
+    """
+    p = prefix
+    return (f"{p}type='user' AND {p}is_sidechain=0 AND {p}prompt_text IS NOT NULL"
+            f" AND {p}prompt_text != '' AND {p}prompt_text NOT LIKE '<%'")
 
 
 def _encode_slug(path: str) -> str:
@@ -221,7 +270,7 @@ def overview_totals(db_path, since=None, until=None) -> dict:
     rng, args = _range_clause(since, until)
     sql = f"""
       SELECT COUNT(DISTINCT session_id) AS sessions,
-             SUM(CASE WHEN type='user' THEN 1 ELSE 0 END) AS turns,
+             SUM(CASE WHEN {real_prompt_sql()} THEN 1 ELSE 0 END) AS turns,
              COALESCE(SUM(input_tokens),0)            AS input_tokens,
              COALESCE(SUM(output_tokens),0)           AS output_tokens,
              COALESCE(SUM(cache_read_tokens),0)       AS cache_read_tokens,
@@ -253,7 +302,7 @@ def expensive_prompts(db_path, limit: int = 50, sort: str = "tokens", session_id
              COALESCE(a.cache_read_tokens,0) AS cache_read_tokens
         FROM messages u
         JOIN messages a ON a.parent_uuid = u.uuid AND a.type='assistant'
-       WHERE u.type='user' AND u.prompt_text IS NOT NULL {sess_sql}
+       WHERE {real_prompt_sql('u.')} {sess_sql}
        ORDER BY {order}
        LIMIT ?
     """
@@ -266,7 +315,7 @@ def project_summary(db_path, since=None, until=None) -> list:
     sql = f"""
       SELECT project_slug,
              COUNT(DISTINCT session_id) AS sessions,
-             SUM(CASE WHEN type='user' THEN 1 ELSE 0 END) AS turns,
+             SUM(CASE WHEN {real_prompt_sql()} THEN 1 ELSE 0 END) AS turns,
              COALESCE(SUM(input_tokens), 0)  AS input_tokens,
              COALESCE(SUM(output_tokens), 0) AS output_tokens,
              SUM(input_tokens)+SUM(output_tokens)
@@ -326,12 +375,10 @@ def recent_sessions(db_path, limit: int = 20, since=None, until=None,
     sql = f"""
       SELECT session_id, project_slug,
              MIN(timestamp) AS started, MAX(timestamp) AS ended,
-             SUM(CASE WHEN type='user' THEN 1 ELSE 0 END) AS turns,
+             SUM(CASE WHEN {real_prompt_sql()} THEN 1 ELSE 0 END) AS turns,
              SUM(input_tokens)+SUM(output_tokens) AS tokens,
              (SELECT p.prompt_text FROM messages p
-               WHERE p.session_id = m.session_id AND p.type = 'user'
-                 AND p.prompt_text IS NOT NULL AND p.prompt_text != ''
-                 AND p.prompt_text NOT LIKE '<%'
+               WHERE p.session_id = m.session_id AND {real_prompt_sql('p.')}
                ORDER BY p.timestamp ASC LIMIT 1) AS first_prompt
         FROM messages m
        WHERE 1=1 {rng} {slug_sql}

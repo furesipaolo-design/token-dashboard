@@ -119,9 +119,11 @@ class StreamingDedupTests(unittest.TestCase):
         self.assertEqual(rows[0]["output_tokens"], 303)
         self.assertEqual(rows[0]["uuid"], "r3")
 
-    def test_superseded_tool_calls_are_removed(self):
-        """When a partial with tool_use is replaced by a final, the partial's
-        tool_calls rows must not linger (they'd inflate tool counts)."""
+    def test_superseded_tool_calls_not_duplicated(self):
+        """A tool_use repeated across snapshot lines must yield exactly one
+        tool_calls row (dedup by tool_use_id), or tool counts inflate. The
+        row may stay attached to the first line's uuid — tool analytics never
+        join back to messages."""
         user = {
             "type": "user", "uuid": "u1", "sessionId": "s1",
             "timestamp": "2026-04-10T00:00:00Z", "isSidechain": False,
@@ -156,8 +158,7 @@ class StreamingDedupTests(unittest.TestCase):
                 "SELECT message_uuid, tool_name FROM tool_calls WHERE tool_name='Read'"
             ).fetchall()
 
-        self.assertEqual(len(tools), 1, "only the winning record's tool_calls remain")
-        self.assertEqual(tools[0]["message_uuid"], "r2")
+        self.assertEqual(len(tools), 1, "repeated tool_use must dedupe to one row")
 
     def test_assistant_without_message_id_falls_back_to_uuid(self):
         """No message.id → behave as before: each uuid is its own row."""

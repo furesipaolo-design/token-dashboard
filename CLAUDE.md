@@ -10,7 +10,7 @@ Inspired by [phuryn/claude-usage](https://github.com/phuryn/claude-usage) but di
 
 ## Status
 
-Working codebase. 120 Python unit tests (`python3 -m unittest discover tests`). Seven UI tabs wired up (Overview, Prompts, Sessions, Projects, Skills, Tips, Settings). Runs on macOS, Windows, and Linux; native macOS app shell in `macos/`.
+Working codebase. 122 Python unit tests (`python3 -m unittest discover tests`). Seven UI tabs wired up (Overview, Prompts, Sessions, Projects, Skills, Tips, Settings). Runs on macOS, Windows, and Linux; native macOS app shell in `macos/`.
 
 ## Architecture
 

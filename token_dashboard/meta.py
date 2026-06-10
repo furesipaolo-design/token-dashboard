@@ -32,21 +32,43 @@ def _clean_paragraph(lines: list) -> str:
     return text
 
 
+_SETEXT_UNDERLINE = re.compile(r"=+|-{2,}")
+
+
+def _strip_frontmatter(lines: list) -> list:
+    """Drop a leading YAML frontmatter block (--- … --- / ...), keys included."""
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    if i >= len(lines) or lines[i].strip() != "---":
+        return lines
+    for j in range(i + 1, len(lines)):
+        if lines[j].strip() in ("---", "..."):
+            return lines[j + 1:]
+    return lines  # unterminated — treat as content
+
+
 def extract_description(doc_text: str) -> Optional[str]:
-    """First meaningful paragraph of a markdown doc: skips headings, badges,
-    blockquotes, HTML comments, and fenced code."""
+    """First meaningful paragraph of a markdown doc: skips YAML frontmatter,
+    headings (ATX and setext), badges, blockquotes, HTML comments, tables,
+    and fenced code."""
     in_fence = False
     paragraph: list = []
-    for raw in doc_text.splitlines():
+    for raw in _strip_frontmatter(doc_text.splitlines()):
         line = raw.strip()
         if line.startswith("```") or line.startswith("~~~"):
             in_fence = not in_fence
             continue
         if in_fence:
             continue
+        if len(paragraph) == 1 and _SETEXT_UNDERLINE.fullmatch(line):
+            # the buffered line was a setext heading ("Title\n====="), not prose
+            paragraph = []
+            continue
         skip = (
             not line
             or line.startswith(("#", ">", "<!--", "|", "---", "[![", "!["))
+            or _SETEXT_UNDERLINE.fullmatch(line)
         )
         if skip:
             if paragraph:

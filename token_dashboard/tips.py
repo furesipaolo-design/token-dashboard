@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -12,13 +12,32 @@ from .pricing import load_pricing
 _PRICING_JSON = Path(__file__).resolve().parent.parent / "pricing.json"
 
 
-def _tier_rates(tier: str, fallback: tuple) -> tuple:
-    """(input, output) $/MTok for a tier, from pricing.json with a safe fallback."""
+def _tier_rates(tier: str, fallback: dict) -> dict:
+    """Full $/MTok rate card for a tier from pricing.json, with a safe fallback."""
     try:
         rates = load_pricing(_PRICING_JSON)["tier_fallback"][tier]
-        return rates["input"], rates["output"]
+        if all(k in rates for k in ("input", "output", "cache_read",
+                                    "cache_create_5m", "cache_create_1h")):
+            return rates
     except (OSError, KeyError, ValueError):
-        return fallback
+        pass
+    return fallback
+
+
+def _usage_cost(rates: dict, row) -> float:
+    """Dollar cost of an aggregated usage row at a tier's rates."""
+    return (
+        (row["in_tok"] or 0) * rates["input"]
+        + (row["cc5"] or 0) * rates["cache_create_5m"]
+        + (row["cc1"] or 0) * rates["cache_create_1h"]
+        + (row["cr"] or 0) * rates["cache_read"]
+        + (row["out_tok"] or 0) * rates["output"]
+    ) / 1_000_000
+
+
+def _utcnow_iso() -> str:
+    # naive-UTC, matching the shape of stored transcript timestamps
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
 
 def _iso_days_ago(today_iso: str, n: int) -> str:
@@ -48,14 +67,16 @@ def dismiss_tip(db_path, key: str) -> None:
 
 
 def cache_discipline_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utcnow_iso()
     since = _iso_days_ago(today_iso, 7)
+    # Main-chain only: subagents and auto-compact runs start with cold caches
+    # by design — their rebuild isn't a habit the user can change.
     sql = """
       SELECT project_slug,
              SUM(cache_read_tokens) AS cr,
              SUM(input_tokens + cache_create_5m_tokens + cache_create_1h_tokens) AS rebuild
         FROM messages
-       WHERE type='assistant' AND timestamp >= ?
+       WHERE type='assistant' AND is_sidechain=0 AND timestamp >= ?
        GROUP BY project_slug
        HAVING (cr + rebuild) > 100000
     """
@@ -79,14 +100,17 @@ def cache_discipline_tips(db_path, today_iso: Optional[str] = None) -> List[dict
 
 
 def repeated_target_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utcnow_iso()
     since = _iso_days_ago(today_iso, 7)
     out = []
     with connect(db_path) as c:
+        # Read only: counting Edit/Write here flagged every actively-developed
+        # file, and the advice (summarize once, read once per session) can't
+        # reduce edit counts anyway.
         for row in c.execute("""
           SELECT target, COUNT(*) AS n, COUNT(DISTINCT session_id) AS sessions
             FROM tool_calls
-           WHERE tool_name IN ('Read','Edit','Write') AND timestamp >= ?
+           WHERE tool_name = 'Read' AND timestamp >= ?
            GROUP BY target HAVING n > 10
            ORDER BY n DESC LIMIT 10
         """, (since,)):
@@ -118,12 +142,21 @@ def repeated_target_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
     return out
 
 
+_OPUS_FALLBACK   = {"input": 5.0, "output": 25.0, "cache_read": 0.50,
+                    "cache_create_5m": 6.25, "cache_create_1h": 10.0}
+_SONNET_FALLBACK = {"input": 3.0, "output": 15.0, "cache_read": 0.30,
+                    "cache_create_5m": 3.75, "cache_create_1h": 6.0}
+
+
 def right_size_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utcnow_iso()
     since = _iso_days_ago(today_iso, 7)
     sql = """
       SELECT COUNT(*) AS n,
-             SUM(input_tokens+cache_create_5m_tokens+cache_create_1h_tokens) AS in_tok,
+             SUM(input_tokens) AS in_tok,
+             SUM(cache_create_5m_tokens) AS cc5,
+             SUM(cache_create_1h_tokens) AS cc1,
+             SUM(cache_read_tokens) AS cr,
              SUM(output_tokens) AS out_tok
         FROM messages
        WHERE type='assistant' AND model LIKE '%opus%'
@@ -134,10 +167,8 @@ def right_size_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
         row = c.execute(sql, (since,)).fetchone()
     if not row or (row["n"] or 0) < 10:
         return []
-    opus_in, opus_out = _tier_rates("opus", (5.0, 25.0))
-    sonnet_in, sonnet_out = _tier_rates("sonnet", (3.0, 15.0))
-    api_opus   = ((row["in_tok"] or 0) * opus_in + (row["out_tok"] or 0) * opus_out) / 1_000_000
-    api_sonnet = ((row["in_tok"] or 0) * sonnet_in + (row["out_tok"] or 0) * sonnet_out) / 1_000_000
+    api_opus   = _usage_cost(_tier_rates("opus", _OPUS_FALLBACK), row)
+    api_sonnet = _usage_cost(_tier_rates("sonnet", _SONNET_FALLBACK), row)
     savings = api_opus - api_sonnet
     if savings < 1.0:
         return []
@@ -146,14 +177,17 @@ def right_size_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
         return []
     return [{
         "key": key, "category": "right-size",
-        "title": f"{row['n']} short Opus turns might fit on Sonnet",
-        "body": f"Opus turns under 500 output tokens cost ~${api_opus:.2f} in the last 7 days. Sonnet would have cost ~${api_sonnet:.2f} (savings ~${savings:.2f}).",
+        "title": f"{row['n']} short Opus calls might fit on Sonnet",
+        "body": f"Opus API calls with under 500 output tokens (including the tool-call steps of "
+                f"longer turns) cost ~${api_opus:.2f} in cache and tokens over the last 7 days. "
+                f"The same traffic on Sonnet would be ~${api_sonnet:.2f} (~${savings:.2f} less). "
+                f"For short, mechanical tasks consider starting the session on Sonnet.",
         "scope": "opus-short-turns-7d",
     }]
 
 
 def outlier_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utcnow_iso()
     since = _iso_days_ago(today_iso, 7)
     out = []
     with connect(db_path) as c:
@@ -171,24 +205,35 @@ def outlier_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
                     "body": f"Average size is {int(big['avg_t']):,} tokens. Pipe long Bash output to head/tail and ask for narrower file reads.",
                     "scope": "result-50k+",
                 })
-        for row in c.execute("""
-          SELECT agent_id, COUNT(*) AS n,
-                 AVG(input_tokens+output_tokens) AS mean_t,
-                 MAX(input_tokens+output_tokens) AS max_t
+        # agent_id is unique per subagent *run*, so compare whole-run totals
+        # across runs (grouping per agent_id and comparing rows within one
+        # run only ever described single API calls and never fired).
+        runs = [r["total"] or 0 for r in c.execute("""
+          SELECT agent_id, SUM(input_tokens+output_tokens) AS total
             FROM messages
            WHERE is_sidechain=1 AND agent_id IS NOT NULL AND timestamp >= ?
-           GROUP BY agent_id HAVING n >= 10
-        """, (since,)):
-            if (row["max_t"] or 0) > 6 * (row["mean_t"] or 1) and (row["max_t"] or 0) > 50_000:
-                key = _key("subagent-outlier", row["agent_id"])
-                if _is_dismissed(db_path, key):
-                    continue
-                out.append({
-                    "key": key, "category": "subagent-outlier",
-                    "title": f"Subagent {row['agent_id']} has cost outliers",
-                    "body": f"Largest invocation used {int(row['max_t']):,} tokens vs mean {int(row['mean_t']):,}. Worth checking what those did differently.",
-                    "scope": row["agent_id"],
-                })
+           GROUP BY agent_id
+        """, (since,))]
+        if len(runs) >= 5:
+            max_t = max(runs)
+            others = list(runs)
+            others.remove(max_t)
+            # Compare against the mean of the *other* runs: a mean that
+            # includes the outlier can never be exceeded 6× with few runs
+            # (max/mean ≤ n), so the rule would silently never fire.
+            mean_t = sum(others) / len(others)
+            if max_t > 6 * mean_t and max_t > 50_000:
+                key = _key("subagent-outlier", "7d")
+                if not _is_dismissed(db_path, key):
+                    out.append({
+                        "key": key, "category": "subagent-outlier",
+                        "title": "One subagent run was a token outlier",
+                        "body": f"The largest of {len(runs)} subagent runs this week used "
+                                f"{int(max_t):,} tokens vs a {int(mean_t):,} average. Worth "
+                                f"checking what that run did differently (over-broad prompt, "
+                                f"missing scope limits).",
+                        "scope": "7d",
+                    })
     return out
 
 

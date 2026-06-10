@@ -100,7 +100,9 @@ def _apply_costs(model_rows: list, pricing: dict):
 def _serve_static(handler, rel: str) -> None:
     rel = rel.lstrip("/")
     p = (WEB_ROOT / rel).resolve()
-    if not str(p).startswith(str(WEB_ROOT.resolve())) or not p.is_file():
+    # The trailing separator matters: without it a sibling like
+    # `<repo>/websecret` passes a startswith check against `<repo>/web`.
+    if not str(p).startswith(str(WEB_ROOT.resolve()) + os.sep) or not p.is_file():
         handler.send_response(404)
         handler.end_headers()
         return
@@ -129,9 +131,26 @@ def build_handler(db_path: str, projects_dir: str):
             pass
 
         def do_HEAD(self):
+            # /api/scan has side effects and /api/stream never returns —
+            # neither makes sense for a HEAD probe.
+            if urlparse(self.path).path in ("/api/scan", "/api/stream"):
+                self.send_response(405)
+                self.end_headers()
+                return
             return self.do_GET()
 
         def do_GET(self):
+            try:
+                return self._route_get()
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # client went away mid-response
+            except Exception as e:
+                try:
+                    _send_error(self, 500, f"{type(e).__name__}: {e}")
+                except Exception:
+                    pass  # headers already sent or socket gone
+
+        def _route_get(self):
             url = urlparse(self.path)
             qs = parse_qs(url.query or "")
             path = url.path
@@ -145,12 +164,10 @@ def build_handler(db_path: str, projects_dir: str):
                 return _serve_static(self, path[5:])
             if path == "/api/overview":
                 totals = overview_totals(db_path, since, until)
-                cost_usd = 0.0
-                for m in model_breakdown(db_path, since, until):
-                    c = cost_for(m["model"], m, pricing)
-                    if c["usd"] is not None:
-                        cost_usd += c["usd"]
-                totals["cost_usd"] = round(cost_usd, 4)
+                # Same semantics as project cards: None when nothing priced
+                # (an unpriced history must not read as "$0.00 = free").
+                totals["cost_usd"] = _apply_costs(
+                    model_breakdown(db_path, since, until), pricing)
                 return _send_json(self, totals)
             if path == "/api/prompts":
                 limit = _clamp_limit(qs.get("limit", ["50"])[0], 50)
@@ -287,6 +304,17 @@ def build_handler(db_path: str, projects_dir: str):
             self.end_headers()
 
         def do_POST(self):
+            try:
+                return self._route_post()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as e:
+                try:
+                    _send_error(self, 500, f"{type(e).__name__}: {e}")
+                except Exception:
+                    pass
+
+        def _route_post(self):
             url = urlparse(self.path)
             try:
                 length = int(self.headers.get("Content-Length") or 0)
@@ -351,7 +379,10 @@ def run(host: str, port: int, db_path: str, projects_dir: str):
     # Live updates: rescan transcripts every few seconds and push an SSE
     # event when new data lands. scan_dir is incremental, so an idle tick
     # costs one stat() per transcript file. Set the env var to 0 to disable.
-    interval = float(os.environ.get("TOKEN_DASHBOARD_WATCH_INTERVAL", "10"))
+    try:
+        interval = float(os.environ.get("TOKEN_DASHBOARD_WATCH_INTERVAL", "10"))
+    except ValueError:
+        interval = 10.0
     if interval > 0:
         threading.Thread(
             target=_watch_loop, args=(projects_dir, db_path, interval), daemon=True
