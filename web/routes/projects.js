@@ -43,26 +43,23 @@ function projectRow(r, { restore = false } = {}) {
       <td class="num">${fmt.int(r.turns)}</td>
       <td class="num">${fmt.int(r.billable_tokens)}</td>
       <td class="num">${fmt.int(r.cache_read_tokens)}</td>
-      <td class="num">
-        <button class="ghost" data-archive="${restore ? 'false' : 'true'}"
-                title="${restore ? 'Restore to the main list' : 'Archive this project'}">
-          ${restore ? '↩ restore' : '📦'}
-        </button>
-      </td>
+      ${restore ? `<td class="num">
+        <button class="ghost" data-archive="false" title="Restore to the main list">↩ restore</button>
+      </td>` : ''}
     </tr>`;
 }
 
-const TABLE_HEAD = `
+const TABLE_HEAD = (actions) => `
   <thead><tr><th>project</th><th class="num">est. cost</th><th class="num">sessions</th>
-  <th class="num">turns</th><th class="num">billable tokens</th><th class="num">cache reads</th><th></th></tr></thead>`;
+  <th class="num">turns</th><th class="num">billable tokens</th><th class="num">cache reads</th>${actions ? '<th></th>' : ''}</tr></thead>`;
 
 function renderList(body, rows) {
   body.insertAdjacentHTML('beforeend', `
     <div class="card">
-      <p class="muted" style="margin:0 0 14px">Sorted by billable token spend. Click a row for the project sum-up; 📦 archives old projects.</p>
+      <p class="muted" style="margin:0 0 14px">Sorted by billable token spend. Click a row for the project sum-up (archiving lives there and in the cards view).</p>
       <table>
-        ${TABLE_HEAD}
-        <tbody>${rows.map(r => projectRow(r)).join('') || '<tr><td colspan="7" class="muted">no active projects</td></tr>'}</tbody>
+        ${TABLE_HEAD(false)}
+        <tbody>${rows.map(r => projectRow(r)).join('') || '<tr><td colspan="6" class="muted">no active projects</td></tr>'}</tbody>
       </table>
     </div>`);
   wireProjectRows(body.lastElementChild, rows);
@@ -86,14 +83,16 @@ function wireProjectRows(scope, rows) {
 
 function renderCards(body, rows) {
   body.insertAdjacentHTML('beforeend', `
-    <p class="muted" style="margin:0 0 12px">One card per project — sparkline is billable tokens over the last 30 days. Click a card for the full project sum-up. ✎ edits the description, 📦 archives.</p>
+    <p class="muted" style="margin:0 0 12px">One card per project — sparkline is billable tokens over the last 30 days. Click a card for the full project sum-up. ✎ edits the description, ⤓ archives.</p>
     <div class="cards-grid">
       ${rows.map((r, i) => `
         <div class="card proj-card" data-i="${i}">
           <h3 style="margin-bottom:2px" title="${fmt.htmlSafe(r.project_slug)}">
             ${fmt.htmlSafe(r.project_name || r.project_slug)}
-            <a class="edit-desc" href="#" data-archive-card title="Archive this project">📦</a>
-            <a class="edit-desc" href="#" data-edit title="Edit description">✎</a>
+            <span class="card-icons">
+              <a class="edit-desc" href="#" data-edit title="Edit description">✎</a>
+              <a class="archive-btn" href="#" data-archive-card title="Archive this project">⤓</a>
+            </span>
           </h3>
           <div class="desc" data-desc>${r.description ? fmt.htmlSafe(r.description) : '<span class="muted">no description — ✎ to add one</span>'}</div>
           <div class="kpis">
@@ -142,7 +141,7 @@ function archivedSection(archived) {
         <span class="muted" style="font-size:12px">${archived.length} — hidden from the main view, still sorted by billable tokens</span>
       </summary>
       <table>
-        ${TABLE_HEAD}
+        ${TABLE_HEAD(true)}
         <tbody>${archived.map(r => projectRow(r, { restore: true })).join('')}</tbody>
       </table>
     </details>`;
@@ -168,10 +167,10 @@ async function openProjectModal(r) {
     <div class="modal wide">
       <div class="flex">
         <h2 style="margin:0">${fmt.htmlSafe(r.project_name || r.project_slug)}</h2>
-        <a class="edit-desc" href="#" data-edit title="Edit description" style="float:none">✎</a>
+        <a class="edit-desc" href="#" data-edit title="Edit description">✎</a>
         <span class="spacer"></span>
         <button data-archive-modal title="${r.archived ? 'Restore to the main list' : 'Move to the archived list'}">
-          ${r.archived ? '↩ Restore' : '📦 Archive'}
+          ${r.archived ? '↩ Restore' : '⤓ Archive'}
         </button>
         <button class="close-x" title="Close (Esc)">✕</button>
       </div>
