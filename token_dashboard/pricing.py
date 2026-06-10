@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Optional, Union
 
 from .db import connect
+
+# Pinned snapshot IDs carry a date suffix (claude-haiku-4-5-20251001);
+# pricing.json keys the dateless alias, which prices identically.
+_DATE_SUFFIX = re.compile(r"-\d{8}$")
 
 
 def load_pricing(path: Union[str, Path]) -> dict:
@@ -14,7 +19,7 @@ def load_pricing(path: Union[str, Path]) -> dict:
 
 def _tier_from_name(model: str) -> Optional[str]:
     m = (model or "").lower()
-    for tier in ("opus", "sonnet", "haiku"):
+    for tier in ("fable", "opus", "sonnet", "haiku"):
         if tier in m:
             return tier
     return None
@@ -23,6 +28,8 @@ def _tier_from_name(model: str) -> Optional[str]:
 def cost_for(model: str, usage: dict, pricing: dict) -> dict:
     """Return {usd, estimated, breakdown}. usd=None when no tier match."""
     rates = pricing["models"].get(model)
+    if rates is None and model:
+        rates = pricing["models"].get(_DATE_SUFFIX.sub("", model))
     estimated = False
     if rates is None:
         tier = _tier_from_name(model or "")

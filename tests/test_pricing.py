@@ -20,6 +20,16 @@ class CostTests(unittest.TestCase):
 
     def test_known_opus_input_cost(self):
         c = cost_for("claude-opus-4-7", self._u(input_tokens=1_000_000), self.p)
+        self.assertAlmostEqual(c["usd"], 5.00, places=4)
+        self.assertFalse(c["estimated"])
+
+    def test_known_fable_input_cost(self):
+        c = cost_for("claude-fable-5", self._u(input_tokens=1_000_000), self.p)
+        self.assertAlmostEqual(c["usd"], 10.00, places=4)
+        self.assertFalse(c["estimated"])
+
+    def test_legacy_opus_41_keeps_old_price(self):
+        c = cost_for("claude-opus-4-1", self._u(input_tokens=1_000_000), self.p)
         self.assertAlmostEqual(c["usd"], 15.00, places=4)
         self.assertFalse(c["estimated"])
 
@@ -27,9 +37,19 @@ class CostTests(unittest.TestCase):
         c = cost_for("claude-sonnet-4-6", self._u(output_tokens=1_000_000), self.p)
         self.assertAlmostEqual(c["usd"], 15.00, places=4)
 
+    def test_dated_snapshot_id_matches_alias(self):
+        c = cost_for("claude-haiku-4-5-20251001", self._u(input_tokens=1_000_000), self.p)
+        self.assertAlmostEqual(c["usd"], 1.00, places=4)
+        self.assertFalse(c["estimated"])
+
     def test_unknown_opus_falls_back(self):
         c = cost_for("claude-opus-9-9-experimental", self._u(input_tokens=1_000_000), self.p)
-        self.assertAlmostEqual(c["usd"], 15.00, places=4)
+        self.assertAlmostEqual(c["usd"], 5.00, places=4)
+        self.assertTrue(c["estimated"])
+
+    def test_unknown_fable_falls_back(self):
+        c = cost_for("claude-fable-9-experimental", self._u(input_tokens=1_000_000), self.p)
+        self.assertAlmostEqual(c["usd"], 10.00, places=4)
         self.assertTrue(c["estimated"])
 
     def test_unknown_unparseable_returns_none(self):
