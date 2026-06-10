@@ -23,7 +23,22 @@ export const fmt = {
   modelShort: m => (m || '').replace('claude-', ''),
   isClaude: m => /^claude-/.test(m || ''),
   basename: p => (p || '').replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop() || p || '',
-  ts: t => (t || '').slice(0, 16).replace('T', ' '),
+  // Transcript timestamps are UTC ("…Z"); render them in the user's local
+  // time — slicing the raw string showed every session 1–2h off in Europe.
+  ts: t => {
+    if (!t) return '';
+    const d = new Date(t);
+    if (isNaN(d)) return String(t).slice(0, 16).replace('T', ' ');
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  },
+  time: (t, secs = false) => {
+    if (!t) return '';
+    const d = new Date(t);
+    if (isNaN(d)) return String(t).slice(11, secs ? 19 : 16);
+    const p = n => String(n).padStart(2, '0');
+    return `${p(d.getHours())}:${p(d.getMinutes())}` + (secs ? `:${p(d.getSeconds())}` : '');
+  },
   duration: (start, end) => {
     const ms = new Date(end) - new Date(start);
     if (!isFinite(ms) || ms < 0) return '';
@@ -101,11 +116,18 @@ async function render() {
   setActiveTab(key);
   const loader = ROUTES[key] || ROUTES['/overview'];
   const mod = await loader();
-  $('#app').innerHTML = '';
+  // Each render gets its own container: hashchange, the SSE scan event, and
+  // the auto-refresh timer all call render() concurrently, and a slower
+  // route's late writes must land in its own (by then detached) container
+  // instead of painting over the route the user is actually on.
+  const { disposeAll } = await import('/web/charts.js');
+  disposeAll();
+  const container = document.createElement('div');
+  $('#app').replaceChildren(container);
   try {
-    await mod.default($('#app'));
+    await mod.default(container);
   } catch (e) {
-    $('#app').innerHTML = `<div class="card"><h2>Error</h2><pre>${fmt.htmlSafe(String(e.stack || e))}</pre></div>`;
+    container.innerHTML = `<div class="card"><h2>Error</h2><pre>${fmt.htmlSafe(String(e.stack || e))}</pre></div>`;
   }
 }
 

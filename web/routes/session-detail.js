@@ -107,7 +107,7 @@ function renderTurn(g) {
   return `
     <details class="turn ${g.hot ? 'hot' : ''}">
       <summary>
-        <span class="mono" style="font-size:11px;color:var(--muted-2)">${(g.time || '').slice(11, 16)}</span>
+        <span class="mono" style="font-size:11px;color:var(--muted-2)">${fmt.time(g.time)}</span>
         <span class="prompt blur-sensitive" style="${isSystem || !g.prompt ? 'color:var(--muted-2)' : ''}">${g.hot ? '⚡ ' : ''}${fmt.htmlSafe(label)}</span>
         <span class="tok">${fmt.compact(g.billable)} billable · ${fmt.compact(g.cacheRd)} cache rd${g.tools ? ` · ${g.tools} tools` : ''}</span>
       </summary>
@@ -121,8 +121,8 @@ function renderTurn(g) {
               : tools.length ? tools.map(x => x.name).join(' · ')
               : '';
             return `<tr>
-              <td class="mono">${(t.timestamp || '').slice(11, 19)}</td>
-              <td>${t.type}${t.is_sidechain ? ' <span class="badge">side</span>' : ''}</td>
+              <td class="mono">${fmt.time(t.timestamp, true)}</td>
+              <td>${fmt.htmlSafe(t.type)}${t.is_sidechain ? ' <span class="badge">side</span>' : ''}</td>
               <td>${t.model ? `<span class="badge ${fmt.modelClass(t.model)}">${fmt.htmlSafe(fmt.modelShort(t.model))}</span>` : ''}</td>
               <td class="blur-sensitive">${fmt.htmlSafe(summary)}</td>
               <td class="num">${fmt.int(t.input_tokens)}</td>

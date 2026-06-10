@@ -33,9 +33,24 @@ const TOOLTIP = {
   padding: [8, 12],
 };
 
+// Model names come from transcripts — escape them before ECharts tooltips,
+// whose formatter output is HTML.
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// One registry + one resize listener for all charts. Per-chart listeners on
+// `window` outlive their chart and leak a closure (plus the detached DOM
+// subtree) on every SSE-driven re-render.
+const LIVE = new Set();
+window.addEventListener('resize', () => LIVE.forEach(c => c.resize()));
+
+export function disposeAll() {
+  LIVE.forEach(c => c.dispose());
+  LIVE.clear();
+}
+
 function mount(el) {
   const c = echarts.init(el, null, { renderer: 'svg' });
-  window.addEventListener('resize', () => c.resize());
+  LIVE.add(c);
   return c;
 }
 
@@ -162,7 +177,7 @@ export function donutChart(el, data) {
       trigger: 'item',
       backgroundColor: '#0F1419', borderColor: '#283040', borderWidth: 1,
       textStyle: { color: '#E6EDF3', fontFamily: CHART_FONT_FAMILY, fontSize: CHART_FONT_SIZE },
-      formatter: p => `${p.name}<br/><b>${Number(p.value).toLocaleString()}</b> tokens (${p.percent.toFixed(1)}%)`,
+      formatter: p => `${esc(p.name)}<br/><b>${Number(p.value).toLocaleString()}</b> tokens (${p.percent.toFixed(1)}%)`,
     },
     legend: {
       textStyle: LEGEND_TEXT_STYLE,

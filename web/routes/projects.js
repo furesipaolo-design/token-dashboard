@@ -200,8 +200,14 @@ async function openProjectModal(r) {
     close();
   });
 
-  const d = await api('/api/projects/detail?slug=' + encodeURIComponent(r.project_slug));
   const pm = overlay.querySelector('#pm-body');
+  let d;
+  try {
+    d = await api('/api/projects/detail?slug=' + encodeURIComponent(r.project_slug));
+  } catch (e) {
+    pm.innerHTML = `<p class="muted">Failed to load project detail: ${fmt.htmlSafe(String(e))}</p>`;
+    return;
+  }
   pm.innerHTML = `
     <div class="row cols-2" style="margin-top:14px">
       <div>
