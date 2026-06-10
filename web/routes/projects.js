@@ -94,7 +94,7 @@ function renderCards(body, rows) {
               <a class="archive-btn" href="#" data-archive-card title="Archive this project">▤</a>
             </span>
           </h3>
-          <div class="desc" data-desc>${r.description ? fmt.htmlSafe(r.description) : '<span class="muted">no description — ✎ to add one</span>'}</div>
+          <div class="desc blur-sensitive" data-desc>${r.description ? fmt.htmlSafe(r.description) : '<span class="muted">no description — ✎ to add one</span>'}</div>
           <div class="kpis">
             <span class="cost"><b>${fmt.usd(r.cost_usd)}</b></span>
             <span><b>${fmt.int(r.sessions)}</b> sessions</span>
@@ -174,7 +174,7 @@ async function openProjectModal(r) {
         </button>
         <button class="close-x" title="Close (Esc)">✕</button>
       </div>
-      <p class="muted" data-desc style="margin:6px 0 0">${r.description ? fmt.htmlSafe(r.description) : '<span class="muted">no description — ✎ to add one</span>'}</p>
+      <p class="muted blur-sensitive" data-desc style="margin:6px 0 0">${r.description ? fmt.htmlSafe(r.description) : '<span class="muted">no description — ✎ to add one</span>'}</p>
       <div class="kpis">
         <span class="cost"><b>${fmt.usd(r.cost_usd)}</b> est. cost</span>
         <span><b>${fmt.int(r.sessions)}</b> sessions</span>
@@ -275,7 +275,7 @@ function editDescription(descEl, r) {
   const form = document.createElement('div');
   form.className = 'desc-form';
   form.innerHTML = `
-    <textarea>${fmt.htmlSafe(r.description || '')}</textarea>
+    <textarea class="blur-sensitive">${fmt.htmlSafe(r.description || '')}</textarea>
     <div class="actions">
       <button class="primary" data-save>Save</button>
       <button data-cancel>Cancel</button>
