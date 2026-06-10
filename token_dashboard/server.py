@@ -25,7 +25,32 @@ WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
 PRICING_JSON = Path(__file__).resolve().parent.parent / "pricing.json"
 LOGO_PATH = Path(__file__).resolve().parent.parent / "docs" / "logo.png"
 
-EVENTS: "queue.Queue[dict]" = queue.Queue()
+# SSE broadcast: one queue per connected client, so an event reaches every
+# stream instead of whichever consumer polls first.
+_SUBSCRIBERS: "list[queue.Queue[dict]]" = []
+_SUB_LOCK = threading.Lock()
+
+
+def subscribe() -> "queue.Queue[dict]":
+    q: "queue.Queue[dict]" = queue.Queue()
+    with _SUB_LOCK:
+        _SUBSCRIBERS.append(q)
+    return q
+
+
+def unsubscribe(q: "queue.Queue[dict]") -> None:
+    with _SUB_LOCK:
+        try:
+            _SUBSCRIBERS.remove(q)
+        except ValueError:
+            pass
+
+
+def notify(evt: dict) -> None:
+    with _SUB_LOCK:
+        targets = list(_SUBSCRIBERS)
+    for q in targets:
+        q.put(evt)
 
 MAX_POST_BYTES = 1_000_000  # 1 MB — we only accept tiny JSON bodies (plan, tip key)
 MAX_LIMIT = 1000
@@ -154,6 +179,8 @@ def build_handler(db_path: str, projects_dir: str):
                 return _send_json(self, {"plan": get_plan(db_path), "pricing": pricing})
             if path == "/api/scan":
                 n = scan_dir(projects_dir, db_path)
+                if n["files"]:
+                    notify({"type": "scan", **n})
                 return _send_json(self, n)
             if path == "/api/stream":
                 self.send_response(200)
@@ -161,17 +188,21 @@ def build_handler(db_path: str, projects_dir: str):
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Connection", "keep-alive")
                 self.end_headers()
-                while True:
-                    try:
-                        evt = EVENTS.get(timeout=15)
-                        chunk = f"data: {json.dumps(evt, default=str)}\n\n".encode()
-                    except queue.Empty:
-                        chunk = b": ping\n\n"
-                    try:
-                        self.wfile.write(chunk)
-                        self.wfile.flush()
-                    except (BrokenPipeError, ConnectionResetError):
-                        return
+                q = subscribe()
+                try:
+                    while True:
+                        try:
+                            evt = q.get(timeout=15)
+                            chunk = f"data: {json.dumps(evt, default=str)}\n\n".encode()
+                        except queue.Empty:
+                            chunk = b": ping\n\n"
+                        try:
+                            self.wfile.write(chunk)
+                            self.wfile.flush()
+                        except (BrokenPipeError, ConnectionResetError):
+                            return
+                finally:
+                    unsubscribe(q)
             self.send_response(404)
             self.end_headers()
 

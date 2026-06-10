@@ -27,7 +27,7 @@ No `pip install`. No Node.js. No build step.
 ## Quickstart
 
 ```bash
-git clone https://github.com/nateherkai/token-dashboard.git
+git clone https://github.com/furesipaolo-design/token-dashboard.git
 cd token-dashboard
 python3 cli.py dashboard
 ```
@@ -40,6 +40,24 @@ The command:
 3. Opens your default browser to that URL.
 
 Leave it running; it re-scans every 30 seconds and pushes updates live. Stop with `Ctrl+C`.
+
+## macOS app
+
+On macOS you can build a real installable app — native window (WKWebView), Dock icon, no browser tab:
+
+```bash
+./macos/build.sh             # builds dist/TokenDashboard.app
+./macos/build.sh --install   # …and installs it into /Applications
+```
+
+How it works:
+
+- The bundle embeds the whole Python backend under `Contents/Resources/backend`, so the app is self-contained and relocatable. It needs `python3` on the Mac it runs on (macOS offers to install the Command Line Tools on first use if missing).
+- On launch it serves immediately on port `8377` and runs the transcript scan in a background thread (`--scan-async`); the UI refreshes itself over SSE when the scan lands. If a dashboard server is already running on that port, the app attaches to it instead of spawning a second one.
+- Quitting the app (⌘Q) terminates the server it spawned. Server logs go to `~/.claude/token-dashboard.log`.
+- The app always reads the **local machine's** `~/.claude/projects/` — install it on another Mac and it shows that Mac's sessions.
+
+Requires the Xcode Command Line Tools to *build* (`swiftc`); the produced `.app` runs on any Mac (arm64 + Intel) with macOS 12+. The binary is ad-hoc signed: if you copy it to another Mac, right-click → Open the first time to get past Gatekeeper.
 
 ## Where the data comes from
 
@@ -79,8 +97,9 @@ python3 cli.py tips          # active suggestions (terminal)
 python3 cli.py dashboard     # scan + serve the UI at http://localhost:8080
 
 # dashboard flags
-python3 cli.py dashboard --no-open   # don't auto-open the browser
-python3 cli.py dashboard --no-scan   # skip the initial scan (use cached DB only)
+python3 cli.py dashboard --no-open     # don't auto-open the browser
+python3 cli.py dashboard --no-scan     # skip the initial scan (use cached DB only)
+python3 cli.py dashboard --scan-async  # serve immediately, scan in a background thread
 ```
 
 Change the port: `PORT=9000 python3 cli.py dashboard`.

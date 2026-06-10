@@ -10,13 +10,14 @@ Inspired by [phuryn/claude-usage](https://github.com/phuryn/claude-usage) but di
 
 ## Status
 
-Working codebase. 68 Python unit tests (`python3 -m unittest discover tests`). Seven UI tabs wired up (Overview, Prompts, Sessions, Projects, Skills, Tips, Settings). Runs on macOS, Windows, and Linux.
+Working codebase. 79 Python unit tests (`python3 -m unittest discover tests`). Seven UI tabs wired up (Overview, Prompts, Sessions, Projects, Skills, Tips, Settings). Runs on macOS, Windows, and Linux; native macOS app shell in `macos/`.
 
 ## Architecture
 
 - `cli.py` → `token_dashboard/scanner.py` → `~/.claude/token-dashboard.db` (SQLite)
 - `token_dashboard/server.py` exposes JSON APIs (`/api/*`) + SSE stream (`/api/stream`) + static frontend (`web/`)
 - `web/` is vanilla JS, no build step — hash router + ECharts
+- `macos/` is the native macOS shell: `main.swift` (AppKit + WKWebView window that spawns the bundled backend with `--scan-async` on fixed port 8377, or attaches to a server already running there) and `build.sh` (compiles universal binary, embeds the backend under `Contents/Resources/backend`, ad-hoc signs; `--install` copies to /Applications). Built bundles land in `dist/` (gitignored). The port is fixed on purpose: the web origin must stay stable or the frontend's localStorage resets at every launch.
 
 ## Data source
 
@@ -44,4 +45,5 @@ See `docs/KNOWN_LIMITATIONS.md`. Current summary: Skills `tokens_per_call` is po
 python3 -m unittest discover tests        # all tests
 python3 cli.py dashboard --no-open        # start the server
 curl http://127.0.0.1:8080/api/overview   # sanity-check an endpoint
+./macos/build.sh --install                # rebuild + reinstall the macOS app after backend/web changes
 ```

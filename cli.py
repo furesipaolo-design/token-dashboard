@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import threading
 import webbrowser
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -73,9 +74,18 @@ def cmd_tips(args):
 def cmd_dashboard(args):
     db = _db_path(args)
     init_db(db)
+    from token_dashboard.server import run, notify
+
     if not args.no_scan:
-        scan_dir(_projects(args), db)
-    from token_dashboard.server import run
+        if args.scan_async:
+            def _background_scan():
+                n = scan_dir(_projects(args), db)
+                if n["files"]:
+                    notify({"type": "scan", **n})
+
+            threading.Thread(target=_background_scan, daemon=True).start()
+        else:
+            scan_dir(_projects(args), db)
 
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8080"))
@@ -100,6 +110,8 @@ def main():
     d = sub.add_parser("dashboard", parents=[common])
     d.add_argument("--no-scan", action="store_true")
     d.add_argument("--no-open", action="store_true")
+    d.add_argument("--scan-async", action="store_true",
+                   help="serve immediately and run the initial scan in a background thread")
     d.set_defaults(func=cmd_dashboard)
     args = p.parse_args()
     args.func(args)

@@ -1,4 +1,0 @@
-#!/bin/zsh
-set -euo pipefail
-
-exec "/Users/paolofuresi/Pollo-Studio/Claude/token-dashboard/launcher.sh"
