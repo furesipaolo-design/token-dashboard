@@ -48,8 +48,15 @@ export function disposeAll() {
   LIVE.clear();
 }
 
+// Entry animations are for the user's own navigation. Backend-driven
+// re-renders (SSE scan events, the auto-refresh timer) replay them every
+// few seconds otherwise — set false for those via setChartAnimation.
+let ANIMATE = true;
+export function setChartAnimation(on) { ANIMATE = !!on; }
+
 function mount(el) {
   const c = echarts.init(el, null, { renderer: 'svg' });
+  c.setOption({ animation: ANIMATE });
   LIVE.add(c);
   return c;
 }

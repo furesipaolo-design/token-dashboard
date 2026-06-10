@@ -108,7 +108,12 @@ function setActiveTab(routeKey) {
   $$('header.topbar nav a').forEach(a => a.classList.toggle('active', a.dataset.route === routeKey));
 }
 
-async function render() {
+// quiet = backend-driven refresh (SSE scan event, auto-refresh timer):
+// update the data without replaying chart animations or losing scroll.
+// Note: render is also a hashchange listener, so the first arg can be an
+// Event — only an explicit {quiet: true} enables quiet mode.
+async function render(opts) {
+  const quiet = !!(opts && opts.quiet === true);
   const hash = location.hash.replace(/^#/, '') || '/overview';
   const path = hash.split('?')[0];
   let key = path;
@@ -120,8 +125,10 @@ async function render() {
   // the auto-refresh timer all call render() concurrently, and a slower
   // route's late writes must land in its own (by then detached) container
   // instead of painting over the route the user is actually on.
-  const { disposeAll } = await import('/web/charts.js');
+  const { disposeAll, setChartAnimation } = await import('/web/charts.js');
   disposeAll();
+  setChartAnimation(!quiet);
+  const scrollY = window.scrollY;
   const container = document.createElement('div');
   $('#app').replaceChildren(container);
   try {
@@ -129,6 +136,7 @@ async function render() {
   } catch (e) {
     container.innerHTML = `<div class="card"><h2>Error</h2><pre>${fmt.htmlSafe(String(e.stack || e))}</pre></div>`;
   }
+  if (quiet) window.scrollTo(0, scrollY);
 }
 
 async function firstRun() {
@@ -175,7 +183,7 @@ async function boot() {
     if (document.visibilityState !== 'visible') return;
     try {
       await api('/api/scan');
-      await render();
+      await render({ quiet: true });
     } catch {}
   }, AUTO_REFRESH_MS);
 
@@ -193,7 +201,7 @@ async function boot() {
     es.onmessage = ev => {
       try {
         const evt = JSON.parse(ev.data);
-        if (evt.type === 'scan') render();
+        if (evt.type === 'scan') render({ quiet: true });
       } catch {}
     };
   } catch {}

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -105,9 +106,29 @@ def init_db(path: Union[str, Path]) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as c:
+        # Clear-and-replay migrations lose history whose transcripts Claude
+        # Code has since deleted from disk — the DB is the only copy of that
+        # data. Snapshot the file before any migration that clears tables.
+        if _needs_destructive_migration(c):
+            c.commit()
+            try:
+                shutil.copy2(path, path.with_suffix(".db.pre-migration.bak"))
+            except OSError:
+                pass  # no backup possible — proceed; migration is still required
         _migrate_add_message_id(c)
         _migrate_add_tool_use_id(c)
         c.executescript(SCHEMA)
+
+
+def _needs_destructive_migration(conn) -> bool:
+    for table, col in (("messages", "message_id"), ("tool_calls", "tool_use_id")):
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone():
+            cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if col not in cols:
+                return True
+    return False
 
 
 def _migrate_add_message_id(conn) -> None:
